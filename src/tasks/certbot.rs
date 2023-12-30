@@ -15,6 +15,24 @@ impl CertbotTask {
     pub async fn run(&self) {
         Command::new("certbot")
             .arg("certonly")
+            .arg("--standalone")
+            .arg("--non-interactive")
+            .arg("--agree-tos")
+            .arg("--preferred-chain")
+            .arg("ISRG Root X1")
+            .arg("--domain")
+            .arg(&self.domain)
+            .arg("--email")
+            .arg(&self.email)
+            .arg("--dry-run")
+            .output()
+            .await
+            .unwrap();
+    }
+
+    pub async fn run_update(&self) {
+        Command::new("certbot")
+            .arg("certonly")
             .arg("--non-interactive")
             .arg("--agree-tos")
             .arg("--preferred-chain")
@@ -24,7 +42,7 @@ impl CertbotTask {
             .arg("--email")
             .arg(&self.email)
             .arg("--webroot")
-            .arg("./certs")
+            .arg("./html")
             .arg("--dry-run")
             .output()
             .await
