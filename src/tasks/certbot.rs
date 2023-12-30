@@ -25,6 +25,7 @@ impl CertbotTask {
             .arg(&self.email)
             .arg("--webroot")
             .arg("./certs")
+            .arg("--dry-run")
             .output()
             .await
             .unwrap();
