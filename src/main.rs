@@ -6,12 +6,13 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use axum::{routing::get, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
-use tasks::{dnsdist::run_dnsdist, dnstap::run_dnstap};
 use tokio_util::task::TaskTracker;
 use tower_http::services::ServeDir;
 
 use crate::handler::{get_logs, get_logs_api};
-use crate::tasks::{certbot::CertbotTask, dnsdist::reload_dnsdist_cert};
+use crate::tasks::certbot::CertbotTask;
+use crate::tasks::dnsdist::{reload_dnsdist_cert, run_dnsdist};
+use crate::tasks::dnstap::{clear_logs, run_dnstap};
 
 #[derive(Parser, Debug)]
 #[command(name = "DnsDist ACME")]
@@ -58,30 +59,14 @@ async fn main() -> anyhow::Result<()> {
 
         let certbot = CertbotTask::new(&domain, &email);
 
-        tracing::info!("certbot renewing certs");
+        tracing::info!("certbot obtaining certs");
         certbot.run().await;
-        tracing::info!("certbot renewing certs. DONE");
+        tracing::info!("certbot obtaining certs. DONE");
 
         let cert = PathBuf::from("./certs/fullchain.pem");
         let key = PathBuf::from("./certs/privkey.pem");
-        let config = RustlsConfig::from_pem_file(cert.as_path(), key.as_path()).await?;
-
-        let cloned_config = config.clone();
-
-        tracing::info!("Starting https server on port 8443");
-        tracker.spawn(async move {
-            let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
-            axum_server::bind_rustls(addr, cloned_config)
-                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-                .unwrap();
-        });
-
-        tracing::info!("Starting dnstap");
-        tracker.spawn(run_dnstap());
-
-        tracing::info!("Starting dnsdist server");
-        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
+        let config_axum = RustlsConfig::from_pem_file(cert.as_path(), key.as_path()).await?;
+        let config_certbot = config_axum.clone();
 
         tracing::info!("Starting certbot auto-update");
         tracker.spawn(async move {
@@ -94,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("certbot renewing certs. DONE");
 
                 tracing::info!("reloading certs for https server");
-                config
+                config_certbot
                     .reload_from_pem_file(cert.as_path(), key.as_path())
                     .await
                     .unwrap();
@@ -105,22 +90,44 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("reloading certs for dnsdist server. DONE");
             }
         });
-    } else {
-        tracing::info!("Starting http server on port 8080");
-        tracker.spawn(async {
-            let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-            axum_server::bind(addr)
-                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+
+        tracing::info!("Starting https server on port 8443");
+        let service = app
+            .clone()
+            .into_make_service_with_connect_info::<SocketAddr>();
+        tracker.spawn(async move {
+            let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
+            axum_server::bind_rustls(addr, config_axum)
+                .serve(service)
                 .await
                 .unwrap();
         });
-
-        tracing::info!("Starting dnstap");
-        tracker.spawn(run_dnstap());
-
-        tracing::info!("Starting dnsdist server");
-        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
     }
+
+    tracing::info!("Starting http server on port 8080");
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+    tracker.spawn(async {
+        let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+        axum_server::bind(addr).serve(service).await.unwrap();
+    });
+
+    tracing::info!("Starting dnstap");
+    tracker.spawn(run_dnstap());
+
+    tracing::info!("Starting dnsdist server");
+    tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
+
+    tracing::info!("Starting dnstap logs-cleanup");
+    tracker.spawn(async {
+        loop {
+            tracing::info!("dnstap logs-cleanup sleeping for 10 minutes");
+            tokio::time::sleep(Duration::from_secs(600)).await;
+
+            tracing::info!("Cleaning logs");
+            clear_logs().await;
+            tracing::info!("Cleaning logs. DONE");
+        }
+    });
 
     tracker.close();
 

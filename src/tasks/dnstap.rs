@@ -12,3 +12,7 @@ pub async fn run_dnstap() {
         .await
         .unwrap();
 }
+
+pub async fn clear_logs() {
+    tokio::fs::write("./logs.yaml", "").await.unwrap();
+}
