@@ -4,23 +4,9 @@ use axum::{extract::ConnectInfo, response::Html, Json};
 use handlebars::Handlebars;
 use serde::Deserialize;
 
-// type: MESSAGE
-// identity: "dns"
-// version: "dnsdist 1.6.1"
-// message:
-//   type: CLIENT_RESPONSE
-//   query_time: !!timestamp 2022-02-26 09:25:07.665010146
-//   response_time: !!timestamp 2022-02-26 09:25:10.493649953
-//   socket_family: INET
-//   socket_protocol: UDP
-//   query_address: 127.0.0.1
-//   response_address: 127.0.0.1
-//   query_port: 45523
-//   response_port: 1253
-//   response_message: |
+static GET_LOGS_TEMPLATE: &str = include_str!("./get_logs.hbs");
 
-static TEMPLATE: &'static str = include_str!("./getLogs.hbs");
-
+#[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct RawMessage {
     #[serde(rename = "type")]
@@ -31,6 +17,7 @@ pub struct RawMessage {
     response_message: String,
 }
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct RawLog {
     #[serde(rename = "type")]
@@ -54,7 +41,7 @@ pub struct GetLogsOutput {
 }
 
 fn extract(message: &str) -> Query {
-    let split: Vec<String> = message.split("\n").map(|s| s.to_string()).collect();
+    let split: Vec<String> = message.split('\n').map(|s| s.to_string()).collect();
 
     let question: String = split
         .iter()
@@ -63,7 +50,7 @@ fn extract(message: &str) -> Query {
         .take(1)
         .next()
         .unwrap()
-        .replace("\t", "");
+        .replace('\t', "");
 
     let answers: Vec<String> = split
         .iter()
@@ -113,7 +100,7 @@ pub async fn get_logs(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String
     let reg = Handlebars::new();
     // render without register
     let response = reg
-        .render_template(TEMPLATE, &GetLogsOutput { ip, queries })
+        .render_template(GET_LOGS_TEMPLATE, &GetLogsOutput { ip, queries })
         .unwrap();
 
     Html(response)
