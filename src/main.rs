@@ -9,7 +9,7 @@ use tasks::{dnsdist::run_dnsdist, dnstap::run_dnstap};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
 
-use crate::tasks::certbot::CertbotTask;
+use crate::tasks::{certbot::CertbotTask, dnsdist::reload_dnsdist_cert};
 
 #[derive(Parser, Debug)]
 #[command(name = "DnsDist ACME")]
@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+    tracing::info!("args: {args:?}");
 
     let tracker = TaskTracker::new();
     let app = Router::new()
@@ -58,7 +59,10 @@ async fn main() -> anyhow::Result<()> {
         let email = args.tls_email.expect("tls_email is not set");
 
         let certbot = CertbotTask::new(&domain, &email);
+
+        tracing::info!("certbot renewing certs");
         certbot.run().await;
+        tracing::info!("certbot renewing certs. DONE");
 
         let certs_dir = PathBuf::from("/etc/letsencrypt/live/").join(&domain);
         let cert_path = certs_dir.join("fullchain.pem");
@@ -66,6 +70,8 @@ async fn main() -> anyhow::Result<()> {
         let config = RustlsConfig::from_pem_file(cert_path.as_path(), key_path.as_path()).await?;
 
         let cloned_config = config.clone();
+
+        tracing::info!("Starting https server on port 8443");
         tracker.spawn(async move {
             let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
             axum_server::bind_rustls(addr, cloned_config)
@@ -74,22 +80,36 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap();
         });
 
+        tracing::info!("Starting dnstap");
         tracker.spawn(run_dnstap());
+
+        tracing::info!("Starting dnsdist server");
         tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
 
+        tracing::info!("Starting certbot auto-update");
         tracker.spawn(async move {
             loop {
+                tracing::info!("certbot auto-update sleeping for 1 hour");
                 tokio::time::sleep(Duration::from_secs(3600)).await;
 
+                tracing::info!("certbot renewing certs");
                 certbot.run().await;
+                tracing::info!("certbot renewing certs. DONE");
+
+                tracing::info!("reloading certs for https server");
                 config
                     .reload_from_pem_file(cert_path.as_path(), key_path.as_path())
                     .await
                     .unwrap();
+                tracing::info!("reloading certs for https server. DONE");
+
+                tracing::info!("reloading certs for dnsdist server");
+                reload_dnsdist_cert().await;
+                tracing::info!("reloading certs for dnsdist server. DONE");
             }
         });
     } else {
-        tracing::info!("Starting http server");
+        tracing::info!("Starting http server on port 8080");
         tracker.spawn(async {
             let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             axum_server::bind(addr)
