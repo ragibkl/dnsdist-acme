@@ -40,20 +40,19 @@ pub struct GetLogsOutput {
     queries: Vec<Query>,
 }
 
-fn extract(message: &str) -> Query {
-    let split: Vec<String> = message.split('\n').map(|s| s.to_string()).collect();
-
-    let question: String = split
-        .iter()
+fn extract_query(response_message: &str) -> Query {
+    let question: String = response_message
+        .split('\n')
         .skip_while(|s| *s != ";; QUESTION SECTION:")
         .skip(1)
         .take(1)
         .next()
-        .unwrap()
+        .map(|s| s.to_string())
+        .unwrap_or_default()
         .replace('\t', "");
 
-    let answers: Vec<String> = split
-        .iter()
+    let answers: Vec<String> = response_message
+        .split('\n')
         .skip_while(|s| *s != ";; ANSWER SECTION:")
         .skip(1)
         .take_while(|s| !s.is_empty())
@@ -64,11 +63,13 @@ fn extract(message: &str) -> Query {
 }
 
 async fn load_queries(ip: &str) -> Vec<Query> {
-    let content = tokio::fs::read_to_string("./logs.yaml").await.unwrap();
+    let content = tokio::fs::read_to_string("./logs.yaml")
+        .await
+        .unwrap_or_default();
 
     let mut logs: Vec<RawLog> = Vec::new();
     for document in serde_yaml::Deserializer::from_str(&content) {
-        let log: Option<RawLog> = Deserialize::deserialize(document).unwrap();
+        let log: Option<RawLog> = Deserialize::deserialize(document).unwrap_or_default();
         if let Some(log) = log {
             logs.push(log);
         }
@@ -76,7 +77,7 @@ async fn load_queries(ip: &str) -> Vec<Query> {
 
     logs.iter()
         .filter(|l| l.message.query_address == ip)
-        .map(|l| extract(l.message.response_message.as_str()))
+        .map(|l| extract_query(l.message.response_message.as_str()))
         .collect()
 }
 
@@ -98,7 +99,6 @@ pub async fn get_logs(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String
     let queries = load_queries(&ip).await;
 
     let reg = Handlebars::new();
-    // render without register
     let response = reg
         .render_template(GET_LOGS_TEMPLATE, &GetLogsOutput { ip, queries })
         .unwrap();
