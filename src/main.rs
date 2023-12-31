@@ -64,10 +64,9 @@ async fn main() -> anyhow::Result<()> {
         certbot.run().await;
         tracing::info!("certbot renewing certs. DONE");
 
-        let certs_dir = PathBuf::from("/etc/letsencrypt/live/").join(&domain);
-        let cert_path = certs_dir.join("fullchain.pem");
-        let key_path = certs_dir.join("privkey.pem");
-        let config = RustlsConfig::from_pem_file(cert_path.as_path(), key_path.as_path()).await?;
+        let cert = PathBuf::from("./certs/fullchain.pem");
+        let key = PathBuf::from("./certs/privkey.pem");
+        let config = RustlsConfig::from_pem_file(cert.as_path(), key.as_path()).await?;
 
         let cloned_config = config.clone();
 
@@ -98,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
 
                 tracing::info!("reloading certs for https server");
                 config
-                    .reload_from_pem_file(cert_path.as_path(), key_path.as_path())
+                    .reload_from_pem_file(cert.as_path(), key.as_path())
                     .await
                     .unwrap();
                 tracing::info!("reloading certs for https server. DONE");
