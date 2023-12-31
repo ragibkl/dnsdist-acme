@@ -6,7 +6,7 @@ use axum::{routing::get, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use tasks::{dnsdist::run_dnsdist, dnstap::run_dnstap};
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::task::TaskTracker;
 use tower_http::services::ServeDir;
 
 use crate::tasks::{certbot::CertbotTask, dnsdist::reload_dnsdist_cert};
