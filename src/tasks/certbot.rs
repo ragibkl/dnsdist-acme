@@ -26,7 +26,7 @@ impl CertbotTask {
             .arg(&self.domain)
             .arg("--email")
             .arg(&self.email)
-            .arg("--dry-run")
+            .arg("--staging")
             .output()
             .await
             .unwrap();
