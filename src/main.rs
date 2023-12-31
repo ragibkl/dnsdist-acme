@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 
         let cloned_config = config.clone();
         tracker.spawn(async move {
-            let addr = SocketAddr::from(([127, 0, 0, 1], 8443));
+            let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
             axum_server::bind_rustls(addr, cloned_config)
                 .serve(app.into_make_service())
                 .await
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::info!("Starting http server");
         tracker.spawn(async {
-            let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+            let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             axum_server::bind(addr)
                 .serve(app.into_make_service())
                 .await
