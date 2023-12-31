@@ -1,3 +1,4 @@
+mod handler;
 mod tasks;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -9,6 +10,7 @@ use tasks::{dnsdist::run_dnsdist, dnstap::run_dnstap};
 use tokio_util::task::TaskTracker;
 use tower_http::services::ServeDir;
 
+use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::{certbot::CertbotTask, dnsdist::reload_dnsdist_cert};
 
 #[derive(Parser, Debug)]
@@ -17,11 +19,11 @@ use crate::tasks::{certbot::CertbotTask, dnsdist::reload_dnsdist_cert};
 #[command(about)]
 struct Args {
     /// Sets a custom l istener port
-    #[arg(short, long, value_name = "PORT", default_value = "53")]
+    #[arg(long, env, value_name = "PORT", default_value = "53")]
     port: u16,
 
     /// Sets a backend port to forward the requests to
-    #[arg(short, long, value_name = "BACKEND", default_value = "8.8.8.8:53")]
+    #[arg(long, env, value_name = "BACKEND", default_value = "8.8.8.8:53")]
     backend: SocketAddr,
 
     /// If enabled, obtains a tls cert from letsencrypt and enable doh and dot protocols
@@ -37,11 +39,6 @@ struct Args {
     tls_domain: Option<String>,
 }
 
-#[axum_macros::debug_handler]
-async fn get_logs() -> String {
-    "Hello".into()
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -52,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let tracker = TaskTracker::new();
     let app = Router::new()
         .route("/logs", get(get_logs))
+        .route("/api/logs", get(get_logs_api))
         .nest_service("/.well-known/", ServeDir::new("./html/.well-known"));
 
     if args.tls_enabled {
@@ -74,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
         tracker.spawn(async move {
             let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
             axum_server::bind_rustls(addr, cloned_config)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .unwrap();
         });
@@ -112,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         tracker.spawn(async {
             let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             axum_server::bind(addr)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .unwrap();
         });
