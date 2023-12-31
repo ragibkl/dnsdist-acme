@@ -24,10 +24,13 @@ RUN go install github.com/dnstap/golang-dnstap/dnstap@v0.4.0
 FROM debian:12
 RUN apt update && apt install -y dnsdist certbot
 
+WORKDIR /dnsdist-acme
+
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
 COPY --from=dnstap /go/bin/dnstap /usr/bin/.
 
+RUN mkdir -p certs html/.well-known
 COPY dnsdist.conf dnsdist.conf
 
 # set entrypoint
