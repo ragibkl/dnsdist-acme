@@ -26,7 +26,6 @@ impl CertbotTask {
             .arg(&self.domain)
             .arg("--email")
             .arg(&self.email)
-            .arg("--staging")
             .output()
             .await
             .unwrap();
@@ -39,25 +38,6 @@ impl CertbotTask {
             .await
             .unwrap();
         tokio::fs::copy(key_path, "./certs/privkey.pem")
-            .await
-            .unwrap();
-    }
-
-    pub async fn run_update(&self) {
-        Command::new("certbot")
-            .arg("certonly")
-            .arg("--non-interactive")
-            .arg("--agree-tos")
-            .arg("--preferred-chain")
-            .arg("ISRG Root X1")
-            .arg("--domain")
-            .arg(&self.domain)
-            .arg("--email")
-            .arg(&self.email)
-            .arg("--webroot")
-            .arg("./html")
-            .arg("--dry-run")
-            .output()
             .await
             .unwrap();
     }
