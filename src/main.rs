@@ -115,11 +115,11 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap();
         });
 
-        // tracing::info!("Starting dnstap");
-        // tracker.spawn(run_dnstap());
+        tracing::info!("Starting dnstap");
+        tracker.spawn(run_dnstap());
 
-        // tracing::info!("Starting dnsdist server");
-        // tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
+        tracing::info!("Starting dnsdist server");
+        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
     }
 
     tracker.close();
