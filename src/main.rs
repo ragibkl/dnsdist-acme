@@ -21,8 +21,8 @@ struct Args {
     port: u16,
 
     /// Sets a backend port to forward the requests to
-    #[arg(short, long, value_name = "PORT", default_value = "1153")]
-    backend_port: u16,
+    #[arg(short, long, value_name = "BACKEND", default_value = "8.8.8.8:53")]
+    backend: SocketAddr,
 
     /// If enabled, obtains a tls cert from letsencrypt and enable doh and dot protocols
     #[arg(long, env, value_name = "TLS_ENABLED")]
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         });
 
         tracker.spawn(run_dnstap());
-        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend_port, args.port));
+        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
 
         tracker.spawn(async move {
             loop {
@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         tracker.spawn(run_dnstap());
 
         tracing::info!("Starting dnsdist server");
-        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend_port, args.port));
+        tracker.spawn(run_dnsdist(args.tls_enabled, args.backend, args.port));
     }
 
     tracker.close();

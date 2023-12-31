@@ -1,9 +1,11 @@
+use std::net::SocketAddr;
+
 use tokio::process::Command;
 
-pub async fn run_dnsdist(tls_enabled: bool, backend_port: u16, port: u16) {
+pub async fn run_dnsdist(tls_enabled: bool, backend: SocketAddr, port: u16) {
     let res = Command::new("dnsdist")
         .env("TLS_ENABLED", tls_enabled.to_string())
-        .env("BACKEND_PORT", backend_port.to_string())
+        .env("BACKEND", backend.to_string())
         .env("PORT", port.to_string())
         .arg("--supervised")
         .arg("--disable-syslog")
