@@ -1,18 +1,20 @@
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
-pub async fn run_dnstap() {
-    Command::new("dnstap")
+pub fn spawn_dnstap() -> Result<Child, anyhow::Error> {
+    let child = Command::new("dnstap")
         .arg("-y")
         .arg("-u")
         .arg("dnstap.sock")
         .arg("-a")
         .arg("-w")
         .arg("logs.yaml")
-        .output()
-        .await
-        .unwrap();
+        .kill_on_drop(true)
+        .spawn()?;
+
+    Ok(child)
 }
 
-pub async fn clear_logs() {
-    tokio::fs::write("./logs.yaml", "").await.unwrap();
+pub async fn clear_dnstap_logs() -> Result<(), anyhow::Error> {
+    tokio::fs::write("./logs.yaml", "").await?;
+    Ok(())
 }

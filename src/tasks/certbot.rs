@@ -14,7 +14,7 @@ impl CertbotTask {
         Self { domain, email }
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&self) -> Result<(), anyhow::Error> {
         Command::new("certbot")
             .arg("certonly")
             .arg("--standalone")
@@ -30,15 +30,17 @@ impl CertbotTask {
             .await
             .unwrap();
 
-        let certs_dir = PathBuf::from("/etc/letsencrypt/live/").join(&self.domain);
-        let cert_path = certs_dir.join("fullchain.pem");
-        let key_path = certs_dir.join("privkey.pem");
-        tokio::fs::create_dir_all("./certs").await.unwrap();
-        tokio::fs::copy(cert_path, "./certs/fullchain.pem")
-            .await
-            .unwrap();
-        tokio::fs::copy(key_path, "./certs/privkey.pem")
-            .await
-            .unwrap();
+        let (cert, key) = {
+            let dir = PathBuf::from("/etc/letsencrypt/live/").join(&self.domain);
+            let cert = dir.join("fullchain.pem");
+            let key = dir.join("privkey.pem");
+            (cert, key)
+        };
+
+        tokio::fs::create_dir_all("./certs").await?;
+        tokio::fs::copy(cert, "./certs/fullchain.pem").await?;
+        tokio::fs::copy(key, "./certs/privkey.pem").await?;
+
+        Ok(())
     }
 }
