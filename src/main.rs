@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Starting https server on port 8443");
         let cloned_token = token.clone();
         tracker.spawn(async move {
-            let addr = SocketAddr::from(([0, 0, 0, 0], 8443));
+            let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8443));
             let handle = Handle::new();
             let server = axum_server::bind_rustls(addr, config_axum).handle(handle.clone());
 
@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting http server on port 8080");
     let cloned_token = token.clone();
     tracker.spawn(async move {
-        let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+        let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8080));
         let handle = Handle::new();
         let server = axum_server::bind(addr).handle(handle.clone());
 
