@@ -249,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Received sigint signal");
             }
             Err(err) => {
-                tracing::info!("Unable to listen for shutdown signal: {err}");
+                tracing::info!("Unable to listen for sigint signal: {err}");
             }
         },
         res = sigterm() => match res {
@@ -257,7 +257,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Received sigterm signal");
             }
             Err(err) => {
-                tracing::info!("Unable to listen for shutdown signal: {err}");
+                tracing::info!("Unable to listen for sigterm signal: {err}");
             }
         },
         _ = tracker.wait() => {
