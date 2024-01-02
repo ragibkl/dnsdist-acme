@@ -6,6 +6,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, Router};
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use clap::Parser;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
 
@@ -47,6 +48,16 @@ fn make_service() -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
         .nest_service("/.well-known/", ServeDir::new("./html/.well-known"));
 
     app.into_make_service_with_connect_info::<SocketAddr>()
+}
+
+async fn sigint() -> std::io::Result<()> {
+    signal(SignalKind::interrupt())?.recv().await;
+    Ok(())
+}
+
+async fn sigterm() -> std::io::Result<()> {
+    signal(SignalKind::terminate())?.recv().await;
+    Ok(())
 }
 
 #[tokio::main]
@@ -233,9 +244,17 @@ async fn main() -> anyhow::Result<()> {
     tracker.close();
 
     tokio::select! {
-        res = tokio::signal::ctrl_c() => match res {
+        res = sigint() => match res {
             Ok(()) => {
-                tracing::info!("Received shutdown signal");
+                tracing::info!("Received sigint signal");
+            }
+            Err(err) => {
+                tracing::info!("Unable to listen for shutdown signal: {err}");
+            }
+        },
+        res = sigterm() => match res {
+            Ok(()) => {
+                tracing::info!("Received sigterm signal");
             }
             Err(err) => {
                 tracing::info!("Unable to listen for shutdown signal: {err}");
