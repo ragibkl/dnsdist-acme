@@ -81,11 +81,19 @@ async fn load_queries(ip: &str) -> Vec<Query> {
         .collect()
 }
 
+fn get_ip(addr: SocketAddr) -> String {
+    let ip = addr.ip().to_string();
+    if ip.starts_with("::ffff:") {
+        return ip.replace("::ffff:", "");
+    }
+    ip
+}
+
 #[axum_macros::debug_handler]
 pub async fn get_logs_api(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Json<GetLogsOutput> {
-    tracing::info!("get_logs - addr: {addr}");
+    tracing::info!("get_logs_api - addr: {addr}");
 
-    let ip = addr.ip().to_string();
+    let ip = get_ip(addr);
     let queries = load_queries(&ip).await;
 
     Json(GetLogsOutput { ip, queries })
@@ -95,7 +103,7 @@ pub async fn get_logs_api(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Json<Ge
 pub async fn get_logs(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
     tracing::info!("get_logs - addr: {addr}");
 
-    let ip = addr.ip().to_string();
+    let ip = get_ip(addr);
     let queries = load_queries(&ip).await;
 
     let reg = Handlebars::new();
