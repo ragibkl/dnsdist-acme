@@ -63,8 +63,7 @@ fn extract_query(response_message: &str) -> Query {
 }
 
 async fn load_queries(ip: &str) -> Vec<Query> {
-    let content = tokio::fs::read_to_string("./logs.yaml")
-        .await
+    let content = std::fs::read_to_string("./logs.yaml")
         .unwrap_or_default();
 
     let mut logs: Vec<RawLog> = Vec::new();
