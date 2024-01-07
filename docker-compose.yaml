@@ -1,0 +1,18 @@
+version: "3"
+
+services:
+  dns:
+    build: .
+    image: ragibkl/dnsdist-acme
+    restart: always
+    environment:
+      - PORT=1153
+      - BACKEND=1.1.1.1:53
+      - TLS_ENABLED=false
+      - TLS_DOMAIN=dns.example.com
+      - TLS_EMAIL=user@example.com
+    ports:
+      - 1153:1153/tcp
+      - 1153:1153/udp
+      - 8080:8080
+      - 8443:8443
