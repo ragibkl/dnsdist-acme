@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     # Permissions to use OIDC token authentication
     permissions:
       contents: read
