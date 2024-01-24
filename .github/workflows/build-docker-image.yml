@@ -30,6 +30,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ragibkl/dnsdist-acme
+          tags: |
+            # default setups
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            # set latest tag for master branch
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}
 
       - uses: depot/setup-action@v1
 
