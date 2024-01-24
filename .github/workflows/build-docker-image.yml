@@ -25,6 +25,12 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ragibkl/dnsdist-acme
+
       - uses: depot/setup-action@v1
 
       - uses: depot/build-push-action@v1
@@ -33,4 +39,4 @@ jobs:
           platforms: linux/amd64,linux/arm64
           project: 83rwjkn7g4
           push: true
-          tags: ragibkl/dnsdist-acme:latest
+          tags: ${{ steps.meta.outputs.tags }}
