@@ -18,6 +18,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push the Docker image
-        run: ./scripts/build.sh
-        working-directory: ./
+      # - name: Build and push the Docker image
+      #   run: ./scripts/build.sh
+      #   working-directory: ./
+
+      - uses: depot/setup-action@v1
+
+      - uses: depot/build-push-action@v1
+        with:
+          project: 83rwjkn7g4
+          context: .
+          push: true
+          tags: ragibkl/dnsdist-acme:latest
