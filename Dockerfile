@@ -23,7 +23,7 @@ RUN apk add go
 RUN go install github.com/dnstap/golang-dnstap/dnstap@v0.4.0
 
 ## runtime
-FROM alpine
+FROM alpine as runtime
 
 WORKDIR /dnsdist-acme
 
