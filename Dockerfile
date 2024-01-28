@@ -1,5 +1,6 @@
 ## builder
-FROM rust:1.76-bookworm AS builder
+FROM alpine as builder
+RUN apk add rust cargo
 
 WORKDIR /code/dnsdist-acme
 
@@ -17,20 +18,21 @@ RUN touch ./src/main.rs
 RUN cargo build --release
 
 ## dnstap
-FROM golang as dnstap
+FROM alpine as dnstap
+RUN apk add go
 RUN go install github.com/dnstap/golang-dnstap/dnstap@v0.4.0
 
 ## runtime
-FROM debian:bookworm
+FROM alpine
 
 WORKDIR /dnsdist-acme
 
 # install runtime dependencies
-RUN apt update && apt install -y dnsdist certbot
+RUN apk add gcompat certbot dnsdist
 
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
-COPY --from=dnstap /go/bin/dnstap /usr/bin/.
+COPY --from=dnstap /root/go/bin/dnstap /usr/bin/.
 
 RUN mkdir -p certs html/.well-known
 COPY dnsdist.conf dnsdist.conf
