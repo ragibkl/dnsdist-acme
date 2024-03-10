@@ -1,10 +1,10 @@
 ## builder
-FROM alpine as builder
-RUN apk add rust cargo
+FROM alpine:3.19 as builder
 
 WORKDIR /code/dnsdist-acme
 
 # setup build dependencies
+RUN apk add rust cargo
 RUN cargo init .
 COPY Cargo.toml Cargo.lock ./
 RUN cargo build --release
@@ -17,13 +17,15 @@ COPY /src/ ./src/
 RUN touch ./src/main.rs
 RUN cargo build --release
 
+
 ## dnstap
-FROM alpine as dnstap
+FROM alpine:3.19 as dnstap
 RUN apk add go
 RUN go install github.com/dnstap/golang-dnstap/dnstap@v0.4.0
 
+
 ## runtime
-FROM alpine as runtime
+FROM alpine:3.19 as runtime
 
 WORKDIR /dnsdist-acme
 
