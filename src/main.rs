@@ -1,4 +1,5 @@
 mod handler;
+mod log_consumer;
 mod tasks;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};

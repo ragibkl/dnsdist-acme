@@ -63,8 +63,7 @@ fn extract_query(response_message: &str) -> Query {
 }
 
 async fn load_queries(ip: &str) -> Vec<Query> {
-    let content = std::fs::read_to_string("./logs.yaml")
-        .unwrap_or_default();
+    let content = std::fs::read_to_string("./logs.yaml").unwrap_or_default();
 
     let mut logs: Vec<RawLog> = Vec::new();
     for document in serde_yaml::Deserializer::from_str(&content) {
