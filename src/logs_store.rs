@@ -1,10 +1,9 @@
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::Deserialize;
 
 #[allow(dead_code)]
@@ -75,7 +74,7 @@ fn extract_query(raw_log: &RawLog) -> Query {
 
 fn extract_queries(content: &str) -> HashMap<String, Vec<Query>> {
     let mut logs: Vec<RawLog> = Vec::new();
-    for document in serde_yaml::Deserializer::from_str(&content) {
+    for document in serde_yaml::Deserializer::from_str(content) {
         let Ok(log) = RawLog::deserialize(document) else {
             continue;
         };
@@ -101,11 +100,43 @@ fn extract_queries(content: &str) -> HashMap<String, Vec<Query>> {
     logs_store
 }
 
-pub struct LogConsumer {
+#[derive(Debug, Clone, Default)]
+pub struct LogsStore {
     logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<Query>>>>>>,
 }
 
-impl LogConsumer {
+impl LogsStore {
+    pub fn update_logs(&self, logs: HashMap<String, Vec<Query>>) {
+        let query_time_cutoff = Utc::now() - Duration::minutes(10);
+
+        let mut logs_store_guard = self.logs_store.lock().unwrap();
+        for (ip, queries) in logs.into_iter() {
+            match logs_store_guard.get(&ip).cloned() {
+                Some(existing) => {
+                    let mut filtered = existing
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .into_iter()
+                        .filter(|q| q.query_time > query_time_cutoff)
+                        .collect::<Vec<_>>();
+                    filtered.extend(queries);
+                    *existing.lock().unwrap() = filtered;
+                }
+                None => {
+                    logs_store_guard.insert(ip, Arc::new(Mutex::new(queries)));
+                }
+            }
+        }
+    }
+
+    pub fn get_queries_for_ip(&self, ip: &str) -> Vec<Query> {
+        match self.logs_store.lock().unwrap().get(ip) {
+            Some(v) => v.lock().unwrap().clone(),
+            None => Vec::new(),
+        }
+    }
+
     pub fn read_logs(&self) {
         let Ok(content) = std::fs::read_to_string("./logs.yaml") else {
             return;
@@ -114,27 +145,7 @@ impl LogConsumer {
 
         let logs_store = extract_queries(&content);
 
-        for (ip, queries) in logs_store.into_iter() {
-            match self.logs_store.lock().unwrap().get(&ip).cloned() {
-                Some(val) => {
-                    let mut current = val
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .filter(|q| true)
-                        .collect::<Vec<_>>();
-                    current.extend(queries);
-                    *val.lock().unwrap() = current;
-                }
-                None => {
-                    self.logs_store
-                        .lock()
-                        .unwrap()
-                        .insert(ip, Arc::new(Mutex::new(queries)));
-                }
-            }
-        }
+        self.update_logs(logs_store);
     }
 }
 
@@ -144,7 +155,7 @@ mod tests {
 
     use chrono::TimeZone;
 
-    use crate::log_consumer::{parse_query_time, Query};
+    use crate::logs_store::{parse_query_time, Query};
 
     use super::extract_queries;
 

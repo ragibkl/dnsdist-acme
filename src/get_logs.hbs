@@ -10,11 +10,13 @@
 
   <table>
     <tr>
+      <th>Timestamp</th>
       <th>Query</th>
       <th>Answers</th>
     </tr>
     {{#each queries}}
     <tr>
+      <td>{{this.query_time}}</td>
       <td>{{this.question}}</td>
       <td>
         <ul>

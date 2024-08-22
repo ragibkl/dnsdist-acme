@@ -13,8 +13,3 @@ pub fn spawn_dnstap() -> Result<Child, anyhow::Error> {
 
     Ok(child)
 }
-
-pub async fn clear_dnstap_logs() -> Result<(), anyhow::Error> {
-    tokio::fs::write("./logs.yaml", "").await?;
-    Ok(())
-}
