@@ -7,14 +7,14 @@ use axum::{
 };
 use handlebars::Handlebars;
 
-use crate::logs_store::{DNSQueryLog, LogsStore};
+use crate::logs_store::{LogsStore, QueryLog};
 
 static GET_LOGS_TEMPLATE: &str = include_str!("./get_logs.hbs");
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct GetLogsOutput {
     ip: String,
-    queries: Vec<DNSQueryLog>,
+    queries: Vec<QueryLog>,
 }
 
 fn get_ip(addr: SocketAddr) -> String {

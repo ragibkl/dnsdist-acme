@@ -30,7 +30,7 @@ pub struct RawLog {
 }
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
-pub struct DNSQueryLog {
+pub struct QueryLog {
     ip: String,
     query_time: chrono::DateTime<Utc>,
     question: String,
@@ -44,7 +44,7 @@ fn parse_query_time(query_time: &str) -> DateTime<Utc> {
     query_time.and_utc()
 }
 
-fn extract_query(raw_log: &RawLog) -> DNSQueryLog {
+fn extract_query(raw_log: &RawLog) -> QueryLog {
     let ip = raw_log.message.query_address.to_string();
     let query_time = parse_query_time(&raw_log.message.query_time);
     let response_message = &raw_log.message.response_message;
@@ -67,7 +67,7 @@ fn extract_query(raw_log: &RawLog) -> DNSQueryLog {
         .map(|s| s.to_string())
         .collect();
 
-    DNSQueryLog {
+    QueryLog {
         ip,
         query_time,
         question,
@@ -75,7 +75,7 @@ fn extract_query(raw_log: &RawLog) -> DNSQueryLog {
     }
 }
 
-fn extract_queries(content: &str) -> HashMap<String, Vec<DNSQueryLog>> {
+fn extract_queries(content: &str) -> HashMap<String, Vec<QueryLog>> {
     let mut raw_logs: Vec<RawLog> = Vec::new();
     for document in serde_yaml::Deserializer::from_str(content) {
         let Ok(log) = RawLog::deserialize(document) else {
@@ -85,7 +85,7 @@ fn extract_queries(content: &str) -> HashMap<String, Vec<DNSQueryLog>> {
         raw_logs.push(log);
     }
 
-    let mut logs_store: HashMap<String, Vec<DNSQueryLog>> = HashMap::new();
+    let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
     for raw_log in raw_logs.into_iter() {
         let query_log = extract_query(&raw_log);
 
@@ -104,7 +104,7 @@ fn extract_queries(content: &str) -> HashMap<String, Vec<DNSQueryLog>> {
 
 #[derive(Debug, Clone, Default)]
 pub struct LogsStore {
-    logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<DNSQueryLog>>>>>>,
+    logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<QueryLog>>>>>>,
 }
 
 impl LogsStore {
@@ -112,23 +112,23 @@ impl LogsStore {
         let query_time_cutoff = Utc::now() - Duration::minutes(10);
 
         let logs_store_guard = self.logs_store.lock().unwrap();
-        for queries in logs_store_guard.values() {
-            queries
+        for query_logs in logs_store_guard.values() {
+            query_logs
                 .lock()
                 .unwrap()
                 .retain(|q| q.query_time > query_time_cutoff);
         }
     }
 
-    pub fn merge_logs(&self, logs: HashMap<String, Vec<DNSQueryLog>>) {
+    pub fn merge_logs(&self, logs_hash_map: HashMap<String, Vec<QueryLog>>) {
         let mut logs_store_guard = self.logs_store.lock().unwrap();
-        for (ip, queries) in logs.into_iter() {
-            match logs_store_guard.get(&ip).cloned() {
-                Some(existing) => {
-                    existing.lock().unwrap().extend(queries);
+        for (ip, logs) in logs_hash_map.into_iter() {
+            match logs_store_guard.get(&ip) {
+                Some(existing_logs) => {
+                    existing_logs.lock().unwrap().extend(logs);
                 }
                 None => {
-                    logs_store_guard.insert(ip, Arc::new(Mutex::new(queries)));
+                    logs_store_guard.insert(ip, Arc::new(Mutex::new(logs)));
                 }
             }
         }
@@ -139,14 +139,14 @@ impl LogsStore {
 
         let content = std::fs::read_to_string("./logs.yaml").unwrap_or_default();
         let _ = std::fs::write("./logs.yaml", "");
-        let logs_store = extract_queries(&content);
+        let logs_hash_map = extract_queries(&content);
 
-        self.merge_logs(logs_store);
+        self.merge_logs(logs_hash_map);
     }
 
-    pub fn get_logs_for_ip(&self, ip: &str) -> Vec<DNSQueryLog> {
-        match self.logs_store.lock().unwrap().get(ip) {
-            Some(v) => v.lock().unwrap().clone(),
+    pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
+        match self.logs_store.lock().unwrap().get(ip).cloned() {
+            Some(logs) => logs.lock().unwrap().clone(),
             None => Vec::new(),
         }
     }
@@ -158,7 +158,7 @@ mod tests {
 
     use chrono::TimeZone;
 
-    use crate::logs_store::{parse_query_time, DNSQueryLog};
+    use crate::logs_store::{parse_query_time, QueryLog};
 
     use super::extract_queries;
 
@@ -204,7 +204,7 @@ message:
 
         let expected = HashMap::from([(
             "127.0.0.1".to_string(),
-            vec![DNSQueryLog {
+            vec![QueryLog {
                 ip: "127.0.0.1".to_string(),
                 query_time: chrono::Utc.with_ymd_and_hms(2022, 2, 26, 9, 25, 7).unwrap(),
                 question: ";zedo.com.IN A".to_string(),
