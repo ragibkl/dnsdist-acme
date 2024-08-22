@@ -29,6 +29,13 @@ pub struct RawLog {
     message: RawMessage,
 }
 
+fn parse_query_time(query_time: &str) -> DateTime<Utc> {
+    let query_time = query_time.replace("!!timestamp", "").trim().to_string();
+    let (query_time, _) =
+        NaiveDateTime::parse_and_remainder(&query_time, "%Y-%m-%d %H:%M:%S").unwrap();
+    query_time.and_utc()
+}
+
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct QueryLog {
     ip: String,
@@ -37,58 +44,48 @@ pub struct QueryLog {
     answers: Vec<String>,
 }
 
-fn parse_query_time(query_time: &str) -> DateTime<Utc> {
-    let query_time = query_time.replace("!!timestamp", "").trim().to_string();
-    let (query_time, _) =
-        NaiveDateTime::parse_and_remainder(&query_time, "%Y-%m-%d %H:%M:%S").unwrap();
-    query_time.and_utc()
-}
+impl From<&RawLog> for QueryLog {
+    fn from(raw_log: &RawLog) -> Self {
+        let ip = raw_log.message.query_address.to_string();
+        let query_time = parse_query_time(&raw_log.message.query_time);
+        let response_message = &raw_log.message.response_message;
 
-fn extract_query(raw_log: &RawLog) -> QueryLog {
-    let ip = raw_log.message.query_address.to_string();
-    let query_time = parse_query_time(&raw_log.message.query_time);
-    let response_message = &raw_log.message.response_message;
+        let question: String = response_message
+            .split('\n')
+            .skip_while(|s| *s != ";; QUESTION SECTION:")
+            .skip(1)
+            .take(1)
+            .next()
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+            .replace('\t', "");
 
-    let question: String = response_message
-        .split('\n')
-        .skip_while(|s| *s != ";; QUESTION SECTION:")
-        .skip(1)
-        .take(1)
-        .next()
-        .map(|s| s.to_string())
-        .unwrap_or_default()
-        .replace('\t', "");
+        let answers: Vec<String> = response_message
+            .split('\n')
+            .skip_while(|s| *s != ";; ANSWER SECTION:")
+            .skip(1)
+            .take_while(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
 
-    let answers: Vec<String> = response_message
-        .split('\n')
-        .skip_while(|s| *s != ";; ANSWER SECTION:")
-        .skip(1)
-        .take_while(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-
-    QueryLog {
-        ip,
-        query_time,
-        question,
-        answers,
+        QueryLog {
+            ip,
+            query_time,
+            question,
+            answers,
+        }
     }
 }
 
-fn extract_queries(content: &str) -> HashMap<String, Vec<QueryLog>> {
-    let mut raw_logs: Vec<RawLog> = Vec::new();
+fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
+    let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
+
     for document in serde_yaml::Deserializer::from_str(content) {
-        let Ok(log) = RawLog::deserialize(document) else {
+        let Ok(raw_log) = RawLog::deserialize(document) else {
             continue;
         };
 
-        raw_logs.push(log);
-    }
-
-    let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
-    for raw_log in raw_logs.into_iter() {
-        let query_log = extract_query(&raw_log);
-
+        let query_log = QueryLog::from(&raw_log);
         match logs_store.get_mut(&query_log.ip) {
             Some(queries) => {
                 queries.push(query_log);
@@ -139,7 +136,7 @@ impl LogsStore {
 
         let content = std::fs::read_to_string("./logs.yaml").unwrap_or_default();
         let _ = std::fs::write("./logs.yaml", "");
-        let logs_hash_map = extract_queries(&content);
+        let logs_hash_map = extract_query_logs(&content);
 
         self.merge_logs(logs_hash_map);
     }
@@ -160,7 +157,7 @@ mod tests {
 
     use crate::logs_store::{parse_query_time, QueryLog};
 
-    use super::extract_queries;
+    use super::extract_query_logs;
 
     #[test]
     fn test_parse_query_time() {
@@ -215,7 +212,7 @@ message:
             }],
         )]);
 
-        let output = extract_queries(input);
+        let output = extract_query_logs(input);
         assert_eq!(output, expected);
     }
 }
