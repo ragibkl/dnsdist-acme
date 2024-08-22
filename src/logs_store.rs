@@ -30,7 +30,8 @@ pub struct RawLog {
 }
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
-pub struct Query {
+pub struct DNSQueryLog {
+    ip: String,
     query_time: chrono::DateTime<Utc>,
     question: String,
     answers: Vec<String>,
@@ -43,9 +44,10 @@ fn parse_query_time(query_time: &str) -> DateTime<Utc> {
     query_time.and_utc()
 }
 
-fn extract_query(raw_log: &RawLog) -> Query {
-    let response_message = &raw_log.message.response_message;
+fn extract_query(raw_log: &RawLog) -> DNSQueryLog {
+    let ip = raw_log.message.query_address.to_string();
     let query_time = parse_query_time(&raw_log.message.query_time);
+    let response_message = &raw_log.message.response_message;
 
     let question: String = response_message
         .split('\n')
@@ -65,34 +67,34 @@ fn extract_query(raw_log: &RawLog) -> Query {
         .map(|s| s.to_string())
         .collect();
 
-    Query {
+    DNSQueryLog {
+        ip,
         query_time,
         question,
         answers,
     }
 }
 
-fn extract_queries(content: &str) -> HashMap<String, Vec<Query>> {
-    let mut logs: Vec<RawLog> = Vec::new();
+fn extract_queries(content: &str) -> HashMap<String, Vec<DNSQueryLog>> {
+    let mut raw_logs: Vec<RawLog> = Vec::new();
     for document in serde_yaml::Deserializer::from_str(content) {
         let Ok(log) = RawLog::deserialize(document) else {
             continue;
         };
 
-        logs.push(log);
+        raw_logs.push(log);
     }
 
-    let mut logs_store: HashMap<String, Vec<Query>> = HashMap::new();
-    for log in logs.into_iter() {
-        let ip = log.message.query_address.to_string();
-        let query = extract_query(&log);
+    let mut logs_store: HashMap<String, Vec<DNSQueryLog>> = HashMap::new();
+    for raw_log in raw_logs.into_iter() {
+        let query_log = extract_query(&raw_log);
 
-        match logs_store.get_mut(&ip) {
+        match logs_store.get_mut(&query_log.ip) {
             Some(queries) => {
-                queries.push(query);
+                queries.push(query_log);
             }
             None => {
-                logs_store.insert(ip, vec![query]);
+                logs_store.insert(query_log.ip.to_string(), vec![query_log]);
             }
         }
     }
@@ -102,26 +104,28 @@ fn extract_queries(content: &str) -> HashMap<String, Vec<Query>> {
 
 #[derive(Debug, Clone, Default)]
 pub struct LogsStore {
-    logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<Query>>>>>>,
+    logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<DNSQueryLog>>>>>>,
 }
 
 impl LogsStore {
-    pub fn update_logs(&self, logs: HashMap<String, Vec<Query>>) {
+    pub fn remove_expired_logs(&self) {
         let query_time_cutoff = Utc::now() - Duration::minutes(10);
 
+        let logs_store_guard = self.logs_store.lock().unwrap();
+        for queries in logs_store_guard.values() {
+            queries
+                .lock()
+                .unwrap()
+                .retain(|q| q.query_time > query_time_cutoff);
+        }
+    }
+
+    pub fn merge_logs(&self, logs: HashMap<String, Vec<DNSQueryLog>>) {
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for (ip, queries) in logs.into_iter() {
             match logs_store_guard.get(&ip).cloned() {
                 Some(existing) => {
-                    let mut filtered = existing
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .filter(|q| q.query_time > query_time_cutoff)
-                        .collect::<Vec<_>>();
-                    filtered.extend(queries);
-                    *existing.lock().unwrap() = filtered;
+                    existing.lock().unwrap().extend(queries);
                 }
                 None => {
                     logs_store_guard.insert(ip, Arc::new(Mutex::new(queries)));
@@ -130,22 +134,21 @@ impl LogsStore {
         }
     }
 
-    pub fn get_queries_for_ip(&self, ip: &str) -> Vec<Query> {
+    pub fn ingest_logs_from_file(&self) {
+        self.remove_expired_logs();
+
+        let content = std::fs::read_to_string("./logs.yaml").unwrap_or_default();
+        let _ = std::fs::write("./logs.yaml", "");
+        let logs_store = extract_queries(&content);
+
+        self.merge_logs(logs_store);
+    }
+
+    pub fn get_logs_for_ip(&self, ip: &str) -> Vec<DNSQueryLog> {
         match self.logs_store.lock().unwrap().get(ip) {
             Some(v) => v.lock().unwrap().clone(),
             None => Vec::new(),
         }
-    }
-
-    pub fn read_logs(&self) {
-        let Ok(content) = std::fs::read_to_string("./logs.yaml") else {
-            return;
-        };
-        let _ = std::fs::write("./logs.yaml", "");
-
-        let logs_store = extract_queries(&content);
-
-        self.update_logs(logs_store);
     }
 }
 
@@ -155,7 +158,7 @@ mod tests {
 
     use chrono::TimeZone;
 
-    use crate::logs_store::{parse_query_time, Query};
+    use crate::logs_store::{parse_query_time, DNSQueryLog};
 
     use super::extract_queries;
 
@@ -201,7 +204,8 @@ message:
 
         let expected = HashMap::from([(
             "127.0.0.1".to_string(),
-            vec![Query {
+            vec![DNSQueryLog {
+                ip: "127.0.0.1".to_string(),
                 query_time: chrono::Utc.with_ymd_and_hms(2022, 2, 26, 9, 25, 7).unwrap(),
                 question: ";zedo.com.IN A".to_string(),
                 answers: vec![

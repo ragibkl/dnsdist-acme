@@ -7,14 +7,14 @@ use axum::{
 };
 use handlebars::Handlebars;
 
-use crate::logs_store::{LogsStore, Query};
+use crate::logs_store::{DNSQueryLog, LogsStore};
 
 static GET_LOGS_TEMPLATE: &str = include_str!("./get_logs.hbs");
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct GetLogsOutput {
     ip: String,
-    queries: Vec<Query>,
+    queries: Vec<DNSQueryLog>,
 }
 
 fn get_ip(addr: SocketAddr) -> String {
@@ -33,7 +33,7 @@ pub async fn get_logs_api(
     tracing::info!("get_logs_api - addr: {addr}");
 
     let ip = get_ip(addr);
-    let queries = logs_store.get_queries_for_ip(&ip);
+    let queries = logs_store.get_logs_for_ip(&ip);
 
     Json(GetLogsOutput { ip, queries })
 }
@@ -46,7 +46,7 @@ pub async fn get_logs(
     tracing::info!("get_logs - addr: {addr}");
 
     let ip = get_ip(addr);
-    let queries = logs_store.get_queries_for_ip(&ip);
+    let queries = logs_store.get_logs_for_ip(&ip);
 
     let reg = Handlebars::new();
     let response = reg
