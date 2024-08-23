@@ -101,31 +101,28 @@ fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
 
 #[derive(Debug, Clone, Default)]
 pub struct LogsStore {
-    logs_store: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<QueryLog>>>>>>,
+    logs_store: Arc<Mutex<HashMap<String, Vec<QueryLog>>>>,
 }
 
 impl LogsStore {
     pub fn remove_expired_logs(&self) {
         let query_time_cutoff = Utc::now() - Duration::minutes(10);
 
-        let logs_store_guard = self.logs_store.lock().unwrap();
-        for query_logs in logs_store_guard.values() {
-            query_logs
-                .lock()
-                .unwrap()
-                .retain(|q| q.query_time > query_time_cutoff);
+        let mut logs_store_guard = self.logs_store.lock().unwrap();
+        for query_logs in logs_store_guard.values_mut() {
+            query_logs.retain(|q| q.query_time > query_time_cutoff);
         }
     }
 
     pub fn merge_logs(&self, logs_hash_map: HashMap<String, Vec<QueryLog>>) {
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for (ip, logs) in logs_hash_map.into_iter() {
-            match logs_store_guard.get(&ip) {
+            match logs_store_guard.get_mut(&ip) {
                 Some(existing_logs) => {
-                    existing_logs.lock().unwrap().extend(logs);
+                    existing_logs.extend(logs);
                 }
                 None => {
-                    logs_store_guard.insert(ip, Arc::new(Mutex::new(logs)));
+                    logs_store_guard.insert(ip, logs);
                 }
             }
         }
@@ -143,7 +140,7 @@ impl LogsStore {
 
     pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
         match self.logs_store.lock().unwrap().get(ip).cloned() {
-            Some(logs) => logs.lock().unwrap().clone(),
+            Some(logs) => logs,
             None => Vec::new(),
         }
     }
