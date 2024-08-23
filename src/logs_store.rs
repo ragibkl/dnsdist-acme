@@ -6,6 +6,8 @@ use std::{
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::Deserialize;
 
+use crate::tasks::dnstap::read_dnstap_logs;
+
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct RawMessage {
@@ -128,11 +130,15 @@ impl LogsStore {
         }
     }
 
-    pub fn ingest_logs_from_file(&self) {
+    pub async fn ingest_logs_from_file(&self) {
+        tracing::info!("LogsStore remove_expired_logs");
         self.remove_expired_logs();
+        tracing::info!("LogsStore remove_expired_logs. DONE");
 
-        let content = std::fs::read_to_string("./logs.yaml").unwrap_or_default();
-        let _ = std::fs::write("./logs.yaml", "");
+        tracing::info!("LogsStore read_dnstap_logs");
+        let content = read_dnstap_logs().await;
+        tracing::info!("LogsStore read_dnstap_logs. DONE");
+
         let logs_hash_map = extract_query_logs(&content);
 
         self.merge_logs(logs_hash_map);

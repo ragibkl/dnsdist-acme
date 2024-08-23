@@ -216,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             tracing::info!("Reading logs");
-            cloned_logs_store.ingest_logs_from_file();
+            cloned_logs_store.ingest_logs_from_file().await;
             tracing::info!("Reading logs. DONE");
         }
     });
