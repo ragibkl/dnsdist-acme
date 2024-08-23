@@ -53,7 +53,7 @@ pub async fn read_dnstap_logs() -> String {
     let content = tokio::fs::read_to_string("./logs.yaml")
         .await
         .unwrap_or_default();
-    let _ = tokio::fs::remove_file("./logs.yaml").await;
+    let _ = tokio::fs::write("./logs.yaml", "").await;
 
     content
 }
