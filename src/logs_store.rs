@@ -88,6 +88,7 @@ fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
         };
 
         let query_log = QueryLog::from(&raw_log);
+        tracing::info!("LogsStore extracted query_log");
         match logs_store.get_mut(&query_log.ip) {
             Some(queries) => {
                 queries.push(query_log);
