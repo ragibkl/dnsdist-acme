@@ -81,7 +81,12 @@ impl From<&RawLog> for QueryLog {
 fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
     let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
 
-    for part in content.split("\n---\n").map(|s| s.trim()) {
+    let content_parts = content
+        .split("\n---\n")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    for part in content_parts {
         let Ok(raw_log) = serde_yaml::from_str::<RawLog>(part) else {
             tracing::info!("extract_query_logs fail to extract part: {part}");
             continue;
@@ -206,7 +211,7 @@ message:
     
     ;; ADDITIONAL SECTION:
     blacklist.	1	IN	SOA	LOCALHOST. named-mgr.example.com.blacklist. 1 3600 900 2592000 7200
-        "#
+"#
         .trim();
 
         let expected = HashMap::from([(
