@@ -4,7 +4,6 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-use serde::Deserialize;
 
 use crate::tasks::dnstap::read_dnstap_logs;
 
@@ -82,13 +81,13 @@ impl From<&RawLog> for QueryLog {
 fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
     let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
 
-    for document in serde_yaml::Deserializer::from_str(content) {
-        let Ok(raw_log) = RawLog::deserialize(document) else {
+    for part in content.split("\n---\n").map(|s| s.trim()) {
+        let Ok(raw_log) = serde_yaml::from_str::<RawLog>(part) else {
+            tracing::info!("LogsStore extract_query_logs fail to extract part: {part}");
             continue;
         };
 
         let query_log = QueryLog::from(&raw_log);
-        tracing::info!("LogsStore extracted query_log");
         match logs_store.get_mut(&query_log.ip) {
             Some(queries) => {
                 queries.push(query_log);
@@ -154,6 +153,7 @@ impl LogsStore {
 
         tracing::info!("LogsStore logs_hash_map");
         self.merge_logs(logs_hash_map);
+        self.remove_expired_logs();
         tracing::info!("LogsStore logs_hash_map. DONE");
     }
 
