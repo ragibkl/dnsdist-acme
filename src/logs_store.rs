@@ -83,7 +83,7 @@ fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
 
     for part in content.split("\n---\n").map(|s| s.trim()) {
         let Ok(raw_log) = serde_yaml::from_str::<RawLog>(part) else {
-            tracing::info!("LogsStore extract_query_logs fail to extract part: {part}");
+            tracing::info!("extract_query_logs fail to extract part: {part}");
             continue;
         };
 
@@ -137,19 +137,13 @@ impl LogsStore {
 
         tracing::info!("LogsStore read_dnstap_logs");
         let content = read_dnstap_logs().await;
-        tracing::info!(
-            "LogsStore read_dnstap_logs. DONE, content.len={}",
-            content.len()
-        );
+        let content_len = content.len();
+        tracing::info!("LogsStore read_dnstap_logs. DONE, content_len={content_len}");
 
         tracing::info!("LogsStore extract_query_logs");
-        let logs_hash_map = tokio::task::spawn_blocking(move || extract_query_logs(&content))
-            .await
-            .unwrap();
-        tracing::info!(
-            "LogsStore extract_query_logs. DONE, logs_hash_map.len()={}",
-            logs_hash_map.len()
-        );
+        let logs_hash_map = extract_query_logs(&content);
+        let logs_hash_map_len = logs_hash_map.len();
+        tracing::info!("LogsStore extract_query_logs. DONE, logs_hash_map_len={logs_hash_map_len}");
 
         tracing::info!("LogsStore logs_hash_map");
         self.merge_logs(logs_hash_map);
