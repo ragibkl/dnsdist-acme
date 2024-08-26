@@ -11,6 +11,7 @@ use logs_store::LogsStore;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::certbot::CertbotTask;
@@ -45,6 +46,7 @@ struct Args {
 
 fn make_service(logs_store: LogsStore) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
     let app = Router::new()
+        .layer(TimeoutLayer::new(Duration::from_secs(5)))
         .route("/logs", get(get_logs))
         .route("/api/logs", get(get_logs_api))
         .with_state(logs_store)
