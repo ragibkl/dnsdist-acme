@@ -34,7 +34,7 @@ pub struct RawLog {
 fn parse_query_time(query_time: &str) -> DateTime<Utc> {
     let query_time = query_time.replace("!!timestamp", "").trim().to_string();
     let (query_time, _) =
-        NaiveDateTime::parse_and_remainder(&query_time, "%Y-%m-%d %H:%M:%S").unwrap();
+        NaiveDateTime::parse_and_remainder(&query_time, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
     query_time.and_utc()
 }
 
@@ -108,7 +108,7 @@ pub struct LogsStore {
 
 impl LogsStore {
     pub fn remove_expired_logs(&self) {
-        let query_time_cutoff = Utc::now() - Duration::minutes(10);
+        let query_time_cutoff = Utc::now() - Duration::minutes(2);
 
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for query_logs in logs_store_guard.values_mut() {
@@ -137,11 +137,21 @@ impl LogsStore {
 
         tracing::info!("LogsStore read_dnstap_logs");
         let content = read_dnstap_logs().await;
-        tracing::info!("LogsStore read_dnstap_logs. DONE");
+        tracing::info!(
+            "LogsStore read_dnstap_logs. DONE, content.len={}",
+            content.len()
+        );
 
+        tracing::info!("LogsStore extract_query_logs");
         let logs_hash_map = extract_query_logs(&content);
+        tracing::info!(
+            "LogsStore extract_query_logs. DONE, logs_hash_map.len()={}",
+            logs_hash_map.len()
+        );
 
+        tracing::info!("LogsStore logs_hash_map");
         self.merge_logs(logs_hash_map);
+        tracing::info!("LogsStore logs_hash_map. DONE");
     }
 
     pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
