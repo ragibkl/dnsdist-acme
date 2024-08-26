@@ -113,7 +113,7 @@ pub struct LogsStore {
 
 impl LogsStore {
     pub fn remove_expired_logs(&self) {
-        let query_time_cutoff = Utc::now() - Duration::minutes(2);
+        let query_time_cutoff = Utc::now() - Duration::minutes(10);
 
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for query_logs in logs_store_guard.values_mut() {
