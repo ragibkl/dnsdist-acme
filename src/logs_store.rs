@@ -144,7 +144,9 @@ impl LogsStore {
         );
 
         tracing::info!("LogsStore extract_query_logs");
-        let logs_hash_map = extract_query_logs(&content);
+        let logs_hash_map = tokio::task::spawn_blocking(move || extract_query_logs(&content))
+            .await
+            .unwrap();
         tracing::info!(
             "LogsStore extract_query_logs. DONE, logs_hash_map.len()={}",
             logs_hash_map.len()
