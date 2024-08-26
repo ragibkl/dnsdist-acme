@@ -1,9 +1,10 @@
 version: "3"
 
 services:
-  dns:
+  dnsdist:
     build: .
-    image: ragibkl/dnsdist-acme
+    pull_policy: build
+    image: ragibkl/dnsdist-acme:local
     restart: always
     environment:
       - PORT=1153
