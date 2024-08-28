@@ -1,5 +1,5 @@
 mod handler;
-mod logs_store;
+mod logs;
 mod tasks;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -7,7 +7,8 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, Router};
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use clap::Parser;
-use logs_store::LogsStore;
+use handler::AppState;
+use logs::{LogsConsumer, QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
@@ -44,11 +45,16 @@ struct Args {
     tls_domain: Option<String>,
 }
 
-fn make_service(logs_store: LogsStore) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
+fn make_service(
+    logs_store: QueryLogs,
+    usage_stats: UsageStats,
+) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
+    let app_state = AppState::new(logs_store, usage_stats);
+
     let app = Router::new()
         .route("/logs", get(get_logs))
         .route("/api/logs", get(get_logs_api))
-        .with_state(logs_store)
+        .with_state(app_state)
         .nest_service("/.well-known/", ServeDir::new("./html/.well-known"))
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(1)))
         .layer(ResponseBodyTimeoutLayer::new(Duration::from_secs(1)))
@@ -77,7 +83,8 @@ async fn main() -> anyhow::Result<()> {
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
-    let logs_store = LogsStore::default();
+    let logs_store = QueryLogs::default();
+    let usage_stats = UsageStats::default();
 
     if args.tls_enabled {
         let domain = args.tls_domain.expect("tls_domain is not set");
@@ -141,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Starting https server on port 8443");
         let cloned_token = token.clone();
         let cloned_logs_store = logs_store.clone();
+        let cloned_usage_stats = usage_stats.clone();
         tracker.spawn(async move {
             let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8443));
             let handle = Handle::new();
@@ -151,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("https server received cancel signal");
                     handle.shutdown();
                 },
-                _ = server.serve(make_service(cloned_logs_store)) => {
+                _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats)) => {
                     tracing::info!("https server ended prematurely");
                     cloned_token.cancel();
                 },
@@ -162,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting http server on port 8080");
     let cloned_token = token.clone();
     let cloned_logs_store = logs_store.clone();
+    let cloned_usage_stats = usage_stats.clone();
     tracker.spawn(async move {
         let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8080));
         let handle = Handle::new();
@@ -172,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("http server received cancel signal");
                 handle.shutdown();
             },
-            _ = server.serve(make_service(cloned_logs_store)) => {
+            _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats)) => {
                 tracing::info!("http server ended prematurely");
                 cloned_token.cancel();
             },
@@ -206,7 +215,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting logs_consumer read_logs");
     let cloned_token = token.clone();
     let cloned_logs_store = logs_store.clone();
+    let cloned_usage_stats = usage_stats.clone();
     tracker.spawn(async move {
+        let log_consumer = LogsConsumer::new(cloned_logs_store, cloned_usage_stats);
         loop {
             tracing::info!("logs_consumer read_logs logs-cleanup sleeping for 1 second");
             tokio::select! {
@@ -220,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             tracing::info!("Reading logs");
-            cloned_logs_store.ingest_logs_from_file().await;
+            log_consumer.ingest_logs_from_file().await;
             tracing::info!("Reading logs. DONE");
         }
     });

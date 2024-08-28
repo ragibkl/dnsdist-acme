@@ -1,11 +1,6 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-
-use crate::tasks::dnstap::read_dnstap_logs;
+use chrono::{DateTime, NaiveDateTime, Utc};
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
@@ -39,10 +34,10 @@ fn parse_query_time(query_time: &str) -> DateTime<Utc> {
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct QueryLog {
-    ip: String,
-    query_time: chrono::DateTime<Utc>,
-    question: String,
-    answers: Vec<String>,
+    pub ip: String,
+    pub query_time: chrono::DateTime<Utc>,
+    pub question: String,
+    pub answers: Vec<String>,
 }
 
 impl From<&RawLog> for QueryLog {
@@ -78,7 +73,7 @@ impl From<&RawLog> for QueryLog {
     }
 }
 
-fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
+pub fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
     let mut logs_store: HashMap<String, Vec<QueryLog>> = HashMap::new();
 
     let content_parts = content
@@ -106,73 +101,13 @@ fn extract_query_logs(content: &str) -> HashMap<String, Vec<QueryLog>> {
     logs_store
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct LogsStore {
-    logs_store: Arc<Mutex<HashMap<String, Vec<QueryLog>>>>,
-}
-
-impl LogsStore {
-    pub fn remove_expired_logs(&self) {
-        let query_time_cutoff = Utc::now() - Duration::minutes(10);
-
-        let mut logs_store_guard = self.logs_store.lock().unwrap();
-        for query_logs in logs_store_guard.values_mut() {
-            query_logs.retain(|q| q.query_time > query_time_cutoff);
-        }
-    }
-
-    pub fn merge_logs(&self, logs_hash_map: HashMap<String, Vec<QueryLog>>) {
-        let mut logs_store_guard = self.logs_store.lock().unwrap();
-        for (ip, logs) in logs_hash_map.into_iter() {
-            match logs_store_guard.get_mut(&ip) {
-                Some(existing_logs) => {
-                    existing_logs.extend(logs);
-                }
-                None => {
-                    logs_store_guard.insert(ip, logs);
-                }
-            }
-        }
-    }
-
-    pub async fn ingest_logs_from_file(&self) {
-        tracing::info!("LogsStore remove_expired_logs");
-        self.remove_expired_logs();
-        tracing::info!("LogsStore remove_expired_logs. DONE");
-
-        tracing::info!("LogsStore read_dnstap_logs");
-        let content = read_dnstap_logs().await;
-        let content_len = content.len();
-        tracing::info!("LogsStore read_dnstap_logs. DONE, content_len={content_len}");
-
-        tracing::info!("LogsStore extract_query_logs");
-        let logs_hash_map = extract_query_logs(&content);
-        let logs_hash_map_len = logs_hash_map.len();
-        tracing::info!("LogsStore extract_query_logs. DONE, logs_hash_map_len={logs_hash_map_len}");
-
-        tracing::info!("LogsStore logs_hash_map");
-        self.merge_logs(logs_hash_map);
-        self.remove_expired_logs();
-        tracing::info!("LogsStore logs_hash_map. DONE");
-    }
-
-    pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
-        match self.logs_store.lock().unwrap().get(ip).cloned() {
-            Some(logs) => logs,
-            None => Vec::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use chrono::TimeZone;
 
-    use crate::logs_store::{parse_query_time, QueryLog};
-
-    use super::extract_query_logs;
+    use super::{extract_query_logs, parse_query_time, QueryLog};
 
     #[test]
     fn test_parse_query_time() {
