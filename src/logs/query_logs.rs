@@ -14,12 +14,14 @@ pub struct QueryLogs {
 
 impl QueryLogs {
     pub fn remove_expired_logs(&self) {
-        let query_time_cutoff = Utc::now() - Duration::minutes(10);
+        let query_time_cutoff = Utc::now() - Duration::minutes(2);
 
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for query_logs in logs_store_guard.values_mut() {
             query_logs.retain(|q| q.query_time > query_time_cutoff);
         }
+
+        logs_store_guard.retain(|_ip, queries| !queries.is_empty());
     }
 
     pub fn merge_logs(&self, logs_hash_map: &HashMap<String, Vec<QueryLog>>) {
