@@ -21,7 +21,7 @@ pub struct GetLogsApiOutput {
 pub struct GetLogsOutput {
     ip: String,
     queries: Vec<QueryLog>,
-    active_ips_last_day: usize,
+    active_ips: usize,
 }
 
 #[derive(Clone)]
@@ -69,7 +69,7 @@ pub async fn get_logs(
 
     let ip = get_ip(addr);
     let queries = app_state.logs_store.get_logs_for_ip(&ip);
-    let active_ips_last_day = app_state.usage_stats.get_active_ips_in_last_day();
+    let active_ips = app_state.usage_stats.get_active_ips();
 
     let reg = Handlebars::new();
     let response = reg
@@ -78,7 +78,7 @@ pub async fn get_logs(
             &GetLogsOutput {
                 ip,
                 queries,
-                active_ips_last_day,
+                active_ips,
             },
         )
         .unwrap();

@@ -44,7 +44,7 @@ impl LogsConsumer {
         self.logs_store.remove_expired_logs();
 
         self.usage_stats.merge_logs(&logs_hash_map);
-        self.usage_stats.remove_old_query_times();
+        self.usage_stats.remove_old_active_ips();
         tracing::trace!("LogsStore logs_hash_map. DONE");
     }
 }
