@@ -410,6 +410,12 @@ approach is kept, track a byte offset and read only what is new.
   the sibling repo has just had to cut per-query logging because container log
   retention had dropped to ten minutes; the same pressure applies here.
 
+- **`src/logs/query_logs.rs:41-46`** — `get_logs_for_ip` trips
+  `clippy::manual_unwrap_or_default`, the only clippy warning in the tree once
+  the toolchain builds again. Clippy's own suggestion:
+  `self.logs_store.lock().unwrap().get(ip).cloned().unwrap_or_default()`.
+  Left alone on the bump branch as out of scope for a version bump.
+
 - **`src/main.rs:27`** — typo in the doc comment: "custom l istener port".
 
 - **Operational, not in this repo: jp-dns2 receives almost no traffic.** jp-dns1
@@ -433,12 +439,23 @@ There are no integration tests in this repo (there are two unit tests in
 80/443/853 to exercise the certbot and TLS paths, so most of this cannot be
 verified locally end to end.
 
-**`cargo build --release` and `cargo clippy --all-targets` do not work on a
-current host** — they fail inside `aws-lc-sys 0.20.1` before reaching any code in
-this repo. See item 1. An earlier draft of this file recommended them; they are
-not usable until item 1 lands.
+**On master, `cargo build --release` and `cargo clippy --all-targets` do not
+work on a current host** — they fail inside `aws-lc-sys 0.20.1` before reaching
+any code in this repo. See item 1. An earlier draft of this file recommended
+them without qualification.
 
-What does work:
+**On branch `bump-alpine-dnsdist` they work again.** Verified under alpine 3.23
+(rust 1.91.1): `cargo test` passes both unit tests, and `cargo clippy
+--all-targets` reports a single warning. Note the clippy package on Alpine is
+`rust-clippy`, not `clippy`, and `apk add` is atomic — a wrong package name
+aborts the whole install and leaves you without cargo:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
+  'apk add --quiet rust cargo build-base cmake perl rust-clippy; cargo test --release'
+```
+
+What also works:
 
 - **`docker build .`** — passes today (exit 0), and catches the base image and
   dependency problems that are most of item 1.
