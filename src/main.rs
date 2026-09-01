@@ -80,13 +80,19 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing::info!("args: {args:?}");
 
+    // Copied out so both the certbot auto-update task and the dnsdist task can
+    // use them; `args` itself is moved into the latter.
+    let tls_enabled = args.tls_enabled;
+    let backend = args.backend;
+    let port = args.port;
+
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
     let logs_store = QueryLogs::default();
     let usage_stats = UsageStats::default();
 
-    if args.tls_enabled {
+    if tls_enabled {
         let domain = args.tls_domain.expect("tls_domain is not set");
         let email = args.tls_email.expect("tls_email is not set");
 
@@ -136,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("reloading certs for https server. DONE");
 
                 tracing::info!("reloading certs for dnsdist server");
-                if let Err(err) = run_dnsdist_reload_cert().await {
+                if let Err(err) = run_dnsdist_reload_cert(tls_enabled, backend, port).await {
                     tracing::error!("reloading certs for dnsdist server. ERROR: {err}");
                     cloned_token.cancel();
                     return;
@@ -239,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting dnsdist server");
     let cloned_token = token.clone();
     tracker.spawn(async move {
-        let mut child = match spawn_dnsdist(args.tls_enabled, args.backend, args.port) {
+        let mut child = match spawn_dnsdist(tls_enabled, backend, port) {
             Ok(child) => child,
             Err(err) => {
                 tracing::error!("Starting dnsdist server. ERROR: {err}");
