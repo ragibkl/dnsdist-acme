@@ -118,56 +118,88 @@ Note `dnsdist.conf` sets none of `setMaxTCPClientThreads`,
 defaults. Shifting UDP traffic onto TCP is the one plausible way this degrades
 service, and is what the canary is watching for.
 
-## 1. Stale base image and unpinned build dependencies
+## 1. Stale base image and unpinned build dependencies — DONE, on branch `bump-alpine-dnsdist`, not yet merged
 
-**Promoted to first** — this is not housekeeping.
+**Where:** `Dockerfile:2`, `:23`, `:29` — all three stages were `alpine:3.19`.
 
-**Where:** `Dockerfile:2`, `:23`, `:29` — all three stages are `alpine:3.19`.
+Alpine 3.19 shipped Dec 2023 with security support to **2025-11-01**, so roughly
+ten months unpatched — not two years, as an earlier draft of this file claimed.
+The running image contained **dnsdist 1.8.2-r1, certbot 2.7.4, gcompat
+1.1.0-r4**. PowerDNS secpoll reports 1.8.2 on every production node as
+`Security Update Recommended: Unsupported release (EOL)`.
 
-The running image contains **dnsdist 1.8.2-r1, certbot 2.7.4, gcompat 1.1.0-r4**
-(read off a production container). Alpine 3.19 shipped Dec 2023 and had security
-support until **2025-11-01**, so it is roughly ten months unpatched — not two
-years, as an earlier draft of this file claimed.
+### Choosing the target: 3.23, not 3.22
 
-The reason this is urgent: **dnsdist 1.8.2 predates 1.8.3, which was a security
-release for a denial of service triggerable by a crafted DNS-over-HTTPS
-exchange** (PowerDNS advisory 2024-01, affecting 1.8.0–1.8.2). Confirm against
-PowerDNS's advisory list before acting — but if it holds, that is a remotely
-triggerable DoS on a protocol all seven nodes actively serve.
+Both packaged versions carry **mandatory** advisories, but they are not
+equivalent:
 
-Upgrade targets, with the current `dnsdist.conf` validated against each by
-`--check-config`:
-
-| base | dnsdist | certbot | config check |
+| base | dnsdist | certbot | outstanding advisory |
 |---|---|---|---|
-| 3.19 (current) | 1.8.2 | 2.7.4 | OK |
-| 3.22 | 1.9.11 | 4.0.0 | **OK** |
-| 3.23 | 2.0.4 | 5.1.0 | **OK** |
+| 3.19 (was) | 1.8.2 | 2.7.4 | EOL, not tracked at all |
+| 3.22 | 1.9.11 | 4.0.0 | 2026-02 **and** 2026-09 |
+| 3.23 (chosen) | 2.0.4 | 5.1.0 | 2026-09 only |
 
-The Lua config needs no changes even at dnsdist 2.0. 3.22 is the conservative
-choice (stays on the 1.9 line); 3.23 is latest but 2.0 is a major version where
-runtime behaviour beyond config parsing is likelier to differ.
+- Advisory **2026-02** affects 1.9.0–1.9.11 and 2.0.0–2.0.2, fixed in 1.9.12 /
+  2.0.3. It includes **CVE-2026-24029, a DoH ACL bypass at CVSS 6.5**, which
+  applies directly — these nodes serve DoH.
+- Advisory **2026-09** affects up to 1.9.14 / 2.0.6, fixed in 1.9.15 / 2.0.7.
+  Its seven CVEs cover the web server (not enabled here), DoH3/DoQ (not used —
+  this config uses HTTP/2 `addDOHLocal`), IXFR, ECS insertion and
+  `SetMacAddrAction`, none of which this config uses.
 
-**The real work is on the Rust side, and it is forced.** `Cargo.toml:10` has
-`aws-lc-rs = { version = "*", features = ["bindgen"] }` — a wildcard on a
-cryptography crate. Worse, the version `Cargo.lock` pins today
-(`aws-lc-sys 0.20.1`) **only builds inside the EOL image**. On a current
-toolchain it fails twice:
+So 2.0.4 is strictly better than 1.9.11, and an earlier draft's advice to prefer
+3.22 as "conservative" was wrong. Neither is fully clean — reaching 2.0.7 means
+building dnsdist from source or leaving Alpine. **Follow-up: watch for a 2.0.7
+package.** The applicability judgement above is about this config and is not
+quoted from the advisories; re-check it before relying on it.
 
-- CMake 4.x: `Compatibility with CMake < 3.5 has been removed`
-- then, forced past that with `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`, GCC 15:
-  `-Werror=discarded-qualifiers`, `-Werror=unterminated-string-initialization`
+### The bump would have silently broken cert reloads
 
-A newer Alpine brings exactly that newer CMake and GCC. So the base bump and the
-`aws-lc-rs` bump are **one atomic change**, not two. `.tool-versions` pins
-`rust 1.75.0` and will need to move with them.
+**dnsdist 2.0 rejects a console key passed as `-k`.** Verified against a running
+instance of each version:
 
-Also unpinned: `Dockerfile:8` runs `cargo install --force --locked bindgen-cli`
-with **no version**, so it takes whatever is newest at build time — same class of
-problem as the wildcard, in the build path for the crypto that terminates TLS.
+| dnsdist | `-k <key>` | `-C <config>` |
+|---|---|---|
+| 1.8.2 | works | works |
+| 1.9.11 | works | works |
+| 2.0.4 | **fails** | works |
 
-**Verify with `docker build .`**, which passes today (exit 0). Do *not* rely on
-local `cargo build` / `cargo clippy` — see "Verifying changes" below.
+`src/tasks/dnsdist.rs` used `-k`. Combined with item 4 — the exit status is
+never checked — this would have failed **silently**: `reloading certs for
+dnsdist server. DONE` logged every hour while nothing reloaded, until DoT/DoH
+began serving an expired certificate weeks later with nothing in the logs.
+
+It now uses `-C dnsdist.conf`, which works on all three versions, so it is safe
+to ship before or after the base bump. It also keeps the key off the command
+line, which is part of item 2. Note the client evaluates the *whole* config, so
+it needs the same `PORT`/`BACKEND`/`TLS_ENABLED` env vars as `spawn_dnsdist`;
+without them it still connects but logs a spurious
+`Error creating new server with address`.
+
+### The Rust side, which was the forced part
+
+`Cargo.toml:10` had `aws-lc-rs = { version = "*", features = ["bindgen"] }` — a
+wildcard on a cryptography crate. Worse, the locked `aws-lc-sys 0.20.1` **only
+built inside the EOL image**: on a current toolchain it fails under CMake 4.x
+(`Compatibility with CMake < 3.5 has been removed`) and then, forced past that,
+under GCC 15 (`-Werror=discarded-qualifiers`). A newer Alpine brings exactly
+that newer CMake and GCC, so the base bump and the crypto pin were necessarily
+one change.
+
+Now `aws-lc-rs = "1.18"` (resolving 1.18.0 / aws-lc-sys 0.44.0) with the
+`bindgen` feature dropped, since recent aws-lc-sys ships pregenerated musl
+bindings. That also removed:
+
+- `apk add clang clang-dev` — alpine 3.23 has no plain `clang` package anyway,
+  only `clang16`/`clang18`, so this would have broken the build regardless
+- `RUN cargo install --force --locked bindgen-cli` — the slowest step in the
+  image build, and the second unpinned dependency
+
+Image shrinks 160 MB → 126 MB. `.tool-versions` moves to `rust 1.91.1`.
+
+**Verified:** `docker build` passes; `dnsdist --check-config` passes; the dnstap
+Go stage builds on go 1.25.10; and `reloadAllCertificates()` was exercised end
+to end against 2.0.4 with TLS enabled and real certificates.
 
 ## 2. dnsdist control-socket key is committed to a public repo
 
@@ -273,6 +305,12 @@ dnsdist keeps serving the **old certificate** until the container restarts. This
 is more likely to bite than the certbot one, and it is coupled to item 2 —
 rotate the key, get it slightly wrong, and this is exactly how you fail to
 notice.
+
+Branch `bump-alpine-dnsdist` changes *how* that command is invoked (`-C`
+instead of `-k`, forced by dnsdist 2.0) but deliberately does **not** add the
+status check, because doing so would newly trigger the `cancel()` at
+`main.rs:141` — the same ordering hazard described below. The reload path is
+still silent on failure.
 
 **Suggested fix:** check `status.success()` in both places, log the captured
 stderr, and return `Err` so the caller can react. Consider also asserting the
