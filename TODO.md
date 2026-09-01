@@ -41,9 +41,12 @@ you were deploying. Note `bancuh-dns` is pinned to `:2` while `dnsdist-acme` is
 unpinned, so this repo is the floating one. `:latest` is also the image the
 README hands to the public.
 
-CI builds branches too (`type=ref,event=branch`), publishing
-`ragibkl/dnsdist-acme:<branch>`. That gives a canary tag without touching
-`:latest` — pin one node's compose to it and run `./start.sh` there.
+Note the workflow's `on:` triggers are only `push` to `master` and
+`pull_request` targeting `master` — **pushing a branch builds nothing**. To get
+a canary image you must open a PR against master, which publishes
+`ragibkl/dnsdist-acme:pr-<N>` via `type=ref,event=pr` and does *not* publish
+`:latest`, since that tag is gated on `github.ref == refs/heads/master`. Pin one
+node's compose to the `pr-<N>` tag and run `./start.sh` there.
 
 ### Production state as measured 2026-09-01 (~2h window)
 
