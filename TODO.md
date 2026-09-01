@@ -315,8 +315,25 @@ status check, because doing so would newly trigger the `cancel()` at
 `main.rs:141` — the same ordering hazard described below. The reload path is
 still silent on failure.
 
-**Suggested fix:** check `status.success()` in both places, log the captured
-stderr, and return `Err` so the caller can react. Consider also asserting the
+**A status check alone is NOT sufficient for the reload path.** Measured on
+the jp-dns2 canary running 2.0.4, the failing invocation still exits 0:
+
+| invocation | exit code | output |
+|---|---|---|
+| `-C dnsdist.conf` (new) | 0 | clean, reload happened |
+| `-k <key>` (old) | **0** | `The currently configured console key is not valid` |
+
+The dnsdist console client reports success on the exit code even when it
+refused to run the command. So `status.success()` would have sailed straight
+past the 2.0 breakage. The reload path needs its output captured and inspected
+(use `.output()` and treat any stderr/stdout content as failure), or the reload
+needs verifying out-of-band — e.g. re-reading the cert dnsdist actually serves
+on :853 and asserting its expiry moved.
+
+**Suggested fix:** for certbot, check `status.success()` and log the captured
+stderr. For the dnsdist reload, capture and inspect the output rather than
+trusting the exit code. Return `Err` in both cases so the caller can react —
+but see the ordering warning below before wiring that up. Consider also asserting the
 copied cert's expiry actually moved, since "certbot succeeded" and "we now have
 a fresher cert" are not the same claim.
 
