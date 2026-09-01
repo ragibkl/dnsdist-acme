@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
-aws-lc-rs = {version = "*", features = ["bindgen"]}
+aws-lc-rs = "1.18"
 axum = "0.7.5"
 axum-macros = "0.4.1"
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
