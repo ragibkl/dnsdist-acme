@@ -10,14 +10,15 @@ Its goal in life is to route traffic to the best server, delivering top performa
 In order to make it easier to deploy onto a live environment and easier to debug, I decided to combine dnsdist with several components:
 
 - [dnsdist](https://dnsdist.org/) - dns load balancer. The current config enables handling DNS53, DoT, DoH protocols
-- [certbot](https://certbot.eff.org/) - automatically handles obtaining an TLS cert from LetsEncrypt, for use in DoT and DoH protocols
+- [rustls-acme](https://crates.io/crates/rustls-acme) - obtains and renews the TLS cert from LetsEncrypt in-process, for use in DoT and DoH protocols. Renewal is event-driven, and the HTTP-01 challenge is served on port 80
 - [golang-dnstap](https://github.com/dnstap/golang-dnstap) - captures query logs from dnsdist and saves it to a file
 - [rust] - main binary to orchestrate the different components. Also serves a web page for viewing the dns logs from the origin ip address
 
 At the moment, this project is available as a Docker container, with all the required components built-in.
-It is currently only available for Docker architecture linux-x86_64.
-If you want to run this on a Raspberry PI, I will need to build and push this project Docker images for Armv6 and Armv7 architectures.
-I intend to provide this in the near future.
+Images are published for `linux/amd64`, `linux/arm64`, `linux/386` and `linux/arm/v7`.
+
+Port 80 must be reachable from the internet: that is the only port Let's Encrypt
+validates HTTP-01 challenges on. The log pages remain on 8080 and 8443.
 
 This project is currently used in my [Adblock DNS Server](https://github.com/ragibkl/adblock-dns-server) to serve as the DNS ingress point.
 It handles the incoming DNS53, DoT, DoH traffic and routes it to the main [Bancuh Adblock DNS](https://github.com/ragibkl/bancuh-dns).

@@ -13,7 +13,8 @@ This service is the TLS/DoH/DoT front-end for the public Bancuh DNS resolvers.
 It runs as a supervisor process (`src/main.rs`) that spawns three children:
 
 - `dnsdist` — the actual DNS proxy, configured by `dnsdist.conf`
-- `certbot` — obtains/renews the Let's Encrypt cert (`src/tasks/certbot.rs`)
+- ACME — the Let's Encrypt cert is obtained and renewed **in-process** by
+  `rustls-acme` (`src/tasks/acme.rs`), not by a child process. See item 3
 - `dnstap` — writes query logs to `logs.yaml`, consumed by `src/logs/`
 
 It is deployed from the `adblock-dns-server` repo
@@ -76,7 +77,7 @@ Useful consequences:
 
 ---
 
-## 0. Rate limit — DONE, on branch `rate-limit-tune`, not yet merged
+## 0. Rate limit — DONE, merged and rolled out to all seven nodes
 
 **Where:** `dnsdist.conf:41`.
 
@@ -121,7 +122,7 @@ Note `dnsdist.conf` sets none of `setMaxTCPClientThreads`,
 defaults. Shifting UDP traffic onto TCP is the one plausible way this degrades
 service, and is what the canary is watching for.
 
-## 1. Stale base image and unpinned build dependencies — DONE, on branch `bump-alpine-dnsdist`, not yet merged
+## 1. Stale base image and unpinned build dependencies — DONE, merged and rolled out to all seven nodes
 
 **Where:** `Dockerfile:2`, `:23`, `:29` — all three stages were `alpine:3.19`.
 
@@ -242,109 +243,66 @@ problem than the committed literal, and fixing the literal alone is worthwhile.
 The current key must be treated as permanently compromised — rotate it, do not
 reuse it.
 
-## 3. A renewal error takes the whole front-end down
+## 3. certbot replaced with in-process ACME — DONE, on branch `acme-native`, not yet merged
 
-**Do this before item 4, or in the same change. See the note at the end.**
+This supersedes what were previously items 3 and 4: a renewal error taking the
+whole front-end down, and certbot failures being swallowed. Both are gone,
+because certbot is gone.
 
-**Where:** `src/main.rs:122`, `:133`, `:141` — the three error arms inside the
-certbot auto-update task.
+**What was wrong.** `CertbotTask::run` called `.output().await.unwrap()` and
+never looked at the returned status. certbot could fail — rate limit, port 80
+busy, DNS not resolving — and the code would carry on and copy
+`/etc/letsencrypt/live/<domain>/*.pem`, which on a renewal still held the
+**previous** certificate. It copied the stale cert, reloaded it, and logged
+`DONE`. Renewal would quietly stop and the first symptom, weeks later, would be
+DoT and DoH failing for every user at once.
 
-Each does `cloned_token.cancel(); return;`. That token cancels the whole
-`TaskTracker`, so the supervisor exits and takes **dnsdist with it**. With
-`restart: always` in the compose file, a transient certbot problem becomes a
-restart loop of the service that answers all production DNS.
+Separately, each of the three error arms in the hourly loop called
+`cloned_token.cancel()`, which cancels the whole `TaskTracker` and takes dnsdist
+with it. With `restart: always`, a transient renewal problem became a restart
+loop of the service answering all production DNS. The first bug masked the
+second: because certbot failures were swallowed, the cancel arm almost never
+fired. Fixing either alone would have been worse than fixing neither.
 
-A failed *renewal* is not a reason to stop serving. The existing certificate is
-still on disk and still valid — often for weeks. Log, keep serving, retry next
-cycle.
+**What replaced it.** [`rustls-acme`](https://crates.io/crates/rustls-acme),
+in-process, mirroring `bancuh-dns/src/tls.rs`:
 
-This is the same bug that was fixed in the sibling `bancuh-dns` repo in PR #4.
-Mirror the shape at `bancuh-dns/src/main.rs:200-207`:
+- Renewal is **event-driven** at ~2/3 of certificate lifetime, not an hourly
+  poll that was a no-op ~1,400 times per certificate
+- Individual ACME errors are logged and retried; only the stream *ending* is
+  fatal. A failed renewal no longer takes the fleet down
+- The Rust HTTPS server takes the ACME resolver directly, so its file-reload
+  path is gone entirely — there is no longer a reload to forget to check
+- certbot and its Python runtime are out of the image: 126MB → 61MB
 
-```rust
-if let Err(err) = cloned_engine.run_update().await {
-    tracing::warn!("... ERROR: {err}. Keeping existing db, will retry next interval.");
-}
-```
+dnsdist is a separate process reading PEM files, so it still needs the
+credential written out and an explicit reload. That is what
+`DnsdistCertCache` does.
 
-Note the other `cancel()` calls in `main.rs` (the ones covering dnsdist and
-dnstap exiting) are *correct* — if a supervised child dies the process should
-come down so Docker restarts it. Only the certbot renewal arms should change.
+**The trap, for anyone touching that cache.** rustls-acme calls `store_cert`
+only for a *newly issued* certificate — `process_cert(.., cached: true)` returns
+before reaching it. A cache that writes dnsdist's files only in `store_cert`
+works on first issuance and on renewal, and silently fails on every restart that
+reuses a cached certificate, which is most restarts. Hence both `load_cert` and
+`store_cert` publish. `tests/e2e/run.sh` case 2 guards this.
 
-## 4. certbot failures are silent, and can lead to unnoticed cert expiry
+**Testing.** `tests/e2e/run.sh` runs the whole thing against
+[Pebble](https://github.com/letsencrypt/pebble), Let's Encrypt's own test CA:
+issue, restart with a warm cache, and re-issue, asserting each time on the
+certificate **dnsdist actually serves on :853** rather than on the file. Real
+Let's Encrypt cannot be used for this — failed validations count against a
+per-domain weekly rate limit on a live service.
 
-**Where:** `src/tasks/certbot.rs:29-31`.
+Note Pebble validates HTTP-01 on port 5002 by default; `tests/e2e/pebble-config.json`
+moves it to 80, which is where the service serves challenges because that is the
+only port Let's Encrypt uses.
 
-```rust
-.output()
-.await
-.unwrap();
-```
+**Still open here:** nothing in the code, but this has not been deployed. Unlike
+every other change in this file, it talks to real Let's Encrypt, so a failed
+validation burns rate limit against a live domain. Canary on jp-dns2 (idle, most
+runway) and confirm a real issuance before touching the rest.
 
-Two problems in three lines:
-
-- `.unwrap()` panics if certbot cannot be spawned at all.
-- The returned `Output.status` is **never checked**, so a certbot that runs and
-  fails is treated as success.
-
-**Why it matters:** on failure (LE rate limit, port 80 blocked, DNS not
-resolving, expired account) the code carries straight on to copy
-`/etc/letsencrypt/live/<domain>/{fullchain,privkey}.pem` — which on a renewal
-still holds the **previous** certificate. It copies the stale cert, reloads it
-into dnsdist, and logs `certbot renewing certs. DONE`.
-
-**The same bug exists in the reload path**, and was missed in the first draft.
-`src/tasks/dnsdist.rs:32-35` captures `.status()`, logs it, and returns
-`Ok(())` regardless:
-
-```rust
-let res = Command::new("dnsdist")...status().await?;
-tracing::info!("dnsdist reload status: {res}");
-Ok(())
-```
-
-So a failed console reload logs `reloading certs for dnsdist server. DONE` while
-dnsdist keeps serving the **old certificate** until the container restarts. This
-is more likely to bite than the certbot one, and it is coupled to item 2 —
-rotate the key, get it slightly wrong, and this is exactly how you fail to
-notice.
-
-Branch `bump-alpine-dnsdist` changes *how* that command is invoked (`-C`
-instead of `-k`, forced by dnsdist 2.0) but deliberately does **not** add the
-status check, because doing so would newly trigger the `cancel()` at
-`main.rs:141` — the same ordering hazard described below. The reload path is
-still silent on failure.
-
-**A status check alone is NOT sufficient for the reload path.** Measured on
-the jp-dns2 canary running 2.0.4, the failing invocation still exits 0:
-
-| invocation | exit code | output |
-|---|---|---|
-| `-C dnsdist.conf` (new) | 0 | clean, reload happened |
-| `-k <key>` (old) | **0** | `The currently configured console key is not valid` |
-
-The dnsdist console client reports success on the exit code even when it
-refused to run the command. So `status.success()` would have sailed straight
-past the 2.0 breakage. The reload path needs its output captured and inspected
-(use `.output()` and treat any stderr/stdout content as failure), or the reload
-needs verifying out-of-band — e.g. re-reading the cert dnsdist actually serves
-on :853 and asserting its expiry moved.
-
-**Suggested fix:** for certbot, check `status.success()` and log the captured
-stderr. For the dnsdist reload, capture and inspect the output rather than
-trusting the exit code. Return `Err` in both cases so the caller can react —
-but see the ordering warning below before wiring that up. Consider also asserting the
-copied cert's expiry actually moved, since "certbot succeeded" and "we now have
-a fresher cert" are not the same claim.
-
-**⚠ Ordering — this is why item 3 comes first.** Today `certbot.run()` only ever
-returns `Err` from the *file copy*, so the arm at `main.rs:122` almost never
-fires. Fix this item alone and you convert "silently serves a stale cert" into
-"cancel the token → supervisor exits → dnsdist dies → restart loop" on all seven
-nodes, on the first hour certbot has a bad day. Item 3 must land first, or in
-the same change.
-
-## 5. `logs.yaml` read-then-truncate drops log entries
+## 4. `logs.yaml` read-then-truncate drops log entries
 
 **Where:** `src/tasks/dnstap.rs:53-56`.
 
@@ -384,11 +342,10 @@ approach is kept, track a byte offset and read only what is new.
   for amplification, with the QPS rule as the only mitigation. Worth a
   deliberate decision, and possibly response-rate limiting.
 
-- **`html/.well-known` looks vestigial.** `src/main.rs:58` serves it on 8080 and
-  8443, but certbot runs `--standalone` (`src/tasks/certbot.rs:20`), which binds
-  its own listener on port 80 and never consults a webroot. Either this is dead
-  code to delete, or someone intended `--webroot`. Confirm which before
-  "fixing" the wrong half.
+- **`html/.well-known` is now definitely vestigial.** `src/main.rs` serves it on
+  8080 and 8443, but the ACME challenge is served by its own listener on port 80
+  (`src/tasks/acme.rs`). It was already unused under certbot's `--standalone`;
+  now there is no ambiguity. Delete it, along with the `ServeDir` route.
 
 - **`dnsdist.conf:24-25`** — `doTCP` and `tcpFastOpenSize` are silently ignored
   by `addDOHLocal`, on 1.8.2 today and on every version tested. They were
@@ -436,6 +393,13 @@ approach is kept, track a byte offset and read only what is new.
   `self.logs_store.lock().unwrap().get(ip).cloned().unwrap_or_default()`.
   Left alone on the bump branch as out of scope for a version bump.
 
+- **`serde_yaml` is deprecated upstream.** The newest release is published as
+  `0.9.34+deprecated` and the crate is archived, so it will receive no further
+  fixes, security included. It parses dnstap output in
+  `src/logs/query_log.rs`, on the ingestion path. `serde_yaml_ng` and
+  `serde_norway` are drop-in successors. Left alone deliberately: swapping YAML
+  parsers touches log ingestion and deserves its own change.
+
 - **`src/main.rs:27`** — typo in the doc comment: "custom l istener port".
 
 - **Operational, not in this repo: jp-dns2 receives almost no traffic.** jp-dns1
@@ -454,21 +418,23 @@ approach is kept, track a byte offset and read only what is new.
 
 ## Verifying changes
 
-There are no integration tests in this repo (there are two unit tests in
-`src/logs/query_log.rs`), and the container needs a real domain plus ports
-80/443/853 to exercise the certbot and TLS paths, so most of this cannot be
-verified locally end to end.
+**`tests/e2e/run.sh`** is the end-to-end ACME suite, run against a local
+[Pebble](https://github.com/letsencrypt/pebble). Nine assertions covering first
+issuance, restart with a warm cache, and re-issuance — each checking the
+certificate **dnsdist actually serves on :853**, not the file on disk. Those are
+different claims and only the second matters to a client. Takes about 90
+seconds.
 
-**On master, `cargo build --release` and `cargo clippy --all-targets` do not
-work on a current host** — they fail inside `aws-lc-sys 0.20.1` before reaching
-any code in this repo. See item 1. An earlier draft of this file recommended
-them without qualification.
+It is the only check that catches a broken challenge route. The axum
+path-parameter syntax (`{token}` on 0.8, `:token` on 0.7) compiles either way
+with no warning and fails only at runtime; getting it wrong means the
+certificate never issues, dnsdist never starts, and the node is fully down. That
+bug was introduced and caught twice during this work.
 
-**On branch `bump-alpine-dnsdist` they work again.** Verified under alpine 3.23
-(rust 1.91.1): `cargo test` passes both unit tests, and `cargo clippy
---all-targets` reports a single warning. Note the clippy package on Alpine is
-`rust-clippy`, not `clippy`, and `apk add` is atomic — a wrong package name
-aborts the whole install and leaves you without cargo:
+`cargo build --release`, `cargo test` and `cargo clippy` all work since the
+toolchain bump. Note the clippy package on Alpine is `rust-clippy`, not
+`clippy`, and `apk add` is atomic — a wrong package name aborts the whole
+install and leaves you without cargo:
 
 ```sh
 docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
@@ -477,8 +443,7 @@ docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
 
 What also works:
 
-- **`docker build .`** — passes today (exit 0), and catches the base image and
-  dependency problems that are most of item 1.
+- **`docker build .`** — passes, and catches base image and dependency problems.
 - **dnsdist config syntax**, against any version, without deploying:
   ```sh
   docker run --rm -v "$PWD/dnsdist.conf:/w/dnsdist.conf:ro" -w /w alpine:3.23 sh -c \
@@ -495,9 +460,9 @@ What also works:
   `topClients(n)` the heaviest sources. Capture a baseline *before* changing a
   rule; you cannot get it afterwards.
 
-For anything touching certbot, use Let's Encrypt's **staging** directory rather
-than production — failed validations against production count against a
-per-domain rate limit, and this service's renewal loop retries hourly.
+For anything touching ACME, use Pebble (`tests/e2e/`) rather than Let's
+Encrypt. Failed validations against production count against a per-domain weekly
+rate limit on a live service, and there is no way to undo one.
 
 Do not deploy to the production nodes without the owner's say-so. They are
 listed in `adblock-dns-server/scripts/deploy.sh`, and that script deploys to

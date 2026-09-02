@@ -2,6 +2,8 @@ mod handler;
 mod logs;
 mod tasks;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, Router};
@@ -12,11 +14,12 @@ use logs::{LogsConsumer, QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
+use axum::http::StatusCode;
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer};
 
 use crate::handler::{get_logs, get_logs_api};
-use crate::tasks::certbot::CertbotTask;
-use crate::tasks::dnsdist::{run_dnsdist_reload_cert, spawn_dnsdist};
+use crate::tasks::acme::setup_acme;
+use crate::tasks::dnsdist::spawn_dnsdist;
 use crate::tasks::dnstap::spawn_dnstap;
 
 #[derive(Parser, Debug)]
@@ -43,6 +46,19 @@ struct Args {
     /// Sets the domain used for letsencrypt
     #[arg(long, env, value_name = "TLS_DOMAIN")]
     tls_domain: Option<String>,
+
+    /// Custom ACME directory URL. Defaults to Let's Encrypt production; the
+    /// end-to-end test points this at a local Pebble instance.
+    #[arg(long, env, value_name = "ACME_URL")]
+    acme_url: Option<String>,
+
+    /// Do not verify the ACME server's own certificate. Only for Pebble.
+    #[arg(long, env, value_name = "ACME_INSECURE")]
+    acme_insecure: bool,
+
+    /// Directory holding the ACME account key and cached certificates
+    #[arg(long, env, value_name = "ACME_CACHE_DIR", default_value = "./acme-cache")]
+    acme_cache_dir: String,
 }
 
 fn make_service(
@@ -58,7 +74,10 @@ fn make_service(
         .nest_service("/.well-known/", ServeDir::new("./html/.well-known"))
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(1)))
         .layer(ResponseBodyTimeoutLayer::new(Duration::from_secs(1)))
-        .layer(TimeoutLayer::new(Duration::from_secs(1)));
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(1),
+        ));
 
     app.into_make_service_with_connect_info::<SocketAddr>()
 }
@@ -92,64 +111,43 @@ async fn main() -> anyhow::Result<()> {
     let logs_store = QueryLogs::default();
     let usage_stats = UsageStats::default();
 
+    // Set once dnsdist is up, so a renewal knows there is something to reload.
+    let mut dnsdist_running: Option<Arc<AtomicBool>> = None;
+
     if tls_enabled {
         let domain = args.tls_domain.expect("tls_domain is not set");
         let email = args.tls_email.expect("tls_email is not set");
 
-        let certbot = CertbotTask::new(&domain, &email);
+        tracing::info!("Setting up ACME for {domain}");
+        let mut acme = setup_acme(
+            domain,
+            email,
+            args.acme_url,
+            args.acme_insecure,
+            PathBuf::from(&args.acme_cache_dir),
+            PathBuf::from("./certs"),
+            tls_enabled,
+            backend,
+            port,
+            &tracker,
+            token.clone(),
+        );
 
-        tracing::info!("certbot obtaining certs");
-        certbot.run().await?;
-        tracing::info!("certbot obtaining certs. DONE");
+        // dnsdist reads its certificate from disk when it starts, so wait for
+        // one to exist first. certbot gave us this ordering by blocking; here
+        // it is explicit.
+        tracing::info!("Waiting for a certificate before starting dnsdist");
+        acme.wait_for_cert().await;
+        tracing::info!("Certificate available");
 
-        let cert = PathBuf::from("./certs/fullchain.pem");
-        let key = PathBuf::from("./certs/privkey.pem");
-        let config_axum = RustlsConfig::from_pem_file(cert.as_path(), key.as_path()).await?;
-        let config_certbot = config_axum.clone();
+        dnsdist_running = Some(acme.dnsdist_running.clone());
 
-        tracing::info!("Starting certbot auto-update");
-        let cloned_token = token.clone();
-        tracker.spawn(async move {
-            loop {
-                tracing::info!("certbot auto-update sleeping for 1 hour");
-                tokio::select! {
-                    _ = cloned_token.cancelled() => {
-                        tracing::info!("certbot auto-update received cancel signal");
-                        return;
-                    },
-                    _ = tokio::time::sleep(Duration::from_secs(3600)) => {
-                        tracing::info!("certbot auto-update waking up");
-                    },
-                }
-
-                tracing::info!("certbot renewing certs");
-                if let Err(err) = certbot.run().await {
-                    tracing::error!("certbot renewing certs. ERROR: {err}");
-                    cloned_token.cancel();
-                    return;
-                }
-                tracing::info!("certbot renewing certs. DONE");
-
-                tracing::info!("reloading certs for https server");
-                if let Err(err) = config_certbot
-                    .reload_from_pem_file(cert.as_path(), key.as_path())
-                    .await
-                {
-                    tracing::error!("reloading certs for https server. ERROR: {err}");
-                    cloned_token.cancel();
-                    return;
-                }
-                tracing::info!("reloading certs for https server. DONE");
-
-                tracing::info!("reloading certs for dnsdist server");
-                if let Err(err) = run_dnsdist_reload_cert(tls_enabled, backend, port).await {
-                    tracing::error!("reloading certs for dnsdist server. ERROR: {err}");
-                    cloned_token.cancel();
-                    return;
-                }
-                tracing::info!("reloading certs for dnsdist server. DONE");
-            }
-        });
+        // The Rust HTTPS server takes the ACME resolver directly, so it always
+        // serves the current certificate. There is no reload path to forget.
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(acme.resolver.clone());
+        let config_axum = RustlsConfig::from_config(Arc::new(server_config));
 
         tracing::info!("Starting https server on port 8443");
         let cloned_token = token.clone();
@@ -253,6 +251,10 @@ async fn main() -> anyhow::Result<()> {
                 return;
             }
         };
+
+        if let Some(flag) = dnsdist_running {
+            flag.store(true, Ordering::SeqCst);
+        }
 
         tokio::select! {
             _ = cloned_token.cancelled() => {
