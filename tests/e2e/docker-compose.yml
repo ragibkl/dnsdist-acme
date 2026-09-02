@@ -1,0 +1,41 @@
+# End-to-end ACME test against Pebble, Let's Encrypt's own test CA.
+#
+# Pebble issues from an ephemeral CA regenerated at every start, so nothing
+# trusts it -- hence ACME_INSECURE on the client side. It has no rate limits,
+# which is the point: the renewal path cannot be iterated on against real
+# Let's Encrypt without burning a per-domain weekly quota on a live service.
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    # httpPort must be 80: the service under test serves HTTP-01 there,
+    # because that is the only port Let's Encrypt validates on. Pebble's
+    # default of 5002 would never reach it.
+    command: ["-config", "/pebble-config.json"]
+    volumes:
+      - ./pebble-config.json:/pebble-config.json:ro
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+
+  dnsdist-acme:
+    image: dnsdist-acme:acme
+    environment:
+      PORT: "5353"
+      BACKEND: "1.1.1.1:53"
+      TLS_ENABLED: "true"
+      TLS_DOMAIN: "dnsdist.test"
+      TLS_EMAIL: "test@example.com"
+      ACME_URL: "https://pebble:14000/dir"
+      ACME_INSECURE: "true"
+      ACME_CACHE_DIR: "/acme-cache"
+      RUST_LOG: "info"
+    volumes:
+      - acme-cache:/acme-cache
+    networks:
+      default:
+        # Pebble resolves the challenge target through Docker's DNS, so the
+        # domain being issued for has to be a name on this network.
+        aliases: ["dnsdist.test"]
+    depends_on: [pebble]
+
+volumes:
+  acme-cache:

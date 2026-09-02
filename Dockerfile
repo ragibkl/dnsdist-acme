@@ -30,7 +30,8 @@ FROM alpine:3.23 AS runtime
 WORKDIR /dnsdist-acme
 
 # install runtime dependencies
-RUN apk add gcompat certbot dnsdist
+# certbot is gone: ACME is handled in-process by rustls-acme.
+RUN apk add gcompat dnsdist
 
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
