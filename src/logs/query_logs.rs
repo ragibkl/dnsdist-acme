@@ -39,9 +39,6 @@ impl QueryLogs {
     }
 
     pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
-        match self.logs_store.lock().unwrap().get(ip).cloned() {
-            Some(logs) => logs,
-            None => Vec::new(),
-        }
+        self.logs_store.lock().unwrap().get(ip).cloned().unwrap_or_default()
     }
 }
