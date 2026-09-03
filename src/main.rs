@@ -56,8 +56,21 @@ struct Args {
     #[arg(long, env, value_name = "ACME_INSECURE")]
     acme_insecure: bool,
 
-    /// Directory holding the ACME account key and cached certificates
-    #[arg(long, env, value_name = "ACME_CACHE_DIR", default_value = "./acme-cache")]
+    /// Directory holding the ACME account key and cached certificates.
+    ///
+    /// Defaults inside /etc/letsencrypt because deployments already mount a
+    /// volume there for certbot, so the cache persists across container
+    /// recreation with no compose change. That matters: without a persisted
+    /// cache every recreate requests a fresh certificate, and Let's Encrypt
+    /// allows only 5 duplicate certificates per hostname per week. Exhaust that
+    /// and a node cannot get a certificate -- and since dnsdist is not started
+    /// without one, it stops serving DNS entirely.
+    #[arg(
+        long,
+        env,
+        value_name = "ACME_CACHE_DIR",
+        default_value = "/etc/letsencrypt/acme-cache"
+    )]
     acme_cache_dir: String,
 }
 
