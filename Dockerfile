@@ -18,12 +18,6 @@ RUN touch ./src/main.rs
 RUN cargo build --release
 
 
-## dnstap
-FROM alpine:3.23 AS dnstap
-RUN apk add go
-RUN go install github.com/dnstap/golang-dnstap/dnstap@v0.4.0
-
-
 ## runtime
 FROM alpine:3.23 AS runtime
 
@@ -35,7 +29,6 @@ RUN apk add gcompat dnsdist
 
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
-COPY --from=dnstap /root/go/bin/dnstap /usr/bin/.
 
 RUN mkdir -p certs html/.well-known
 COPY dnsdist.conf dnsdist.conf

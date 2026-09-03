@@ -10,7 +10,7 @@ use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, 
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use clap::Parser;
 use handler::AppState;
-use logs::{LogsConsumer, QueryLogs, UsageStats};
+use logs::{QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::services::ServeDir;
@@ -20,7 +20,7 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, Tim
 use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::acme::setup_acme;
 use crate::tasks::dnsdist::spawn_dnsdist;
-use crate::tasks::dnstap::spawn_dnstap;
+use crate::tasks::dnstap::spawn_dnstap_listener;
 
 #[derive(Parser, Debug)]
 #[command(name = "DnsDist ACME")]
@@ -205,51 +205,38 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    tracing::info!("Starting dnstap");
-    let cloned_token = token.clone();
-    tracker.spawn(async move {
-        let mut child = match spawn_dnstap() {
-            Ok(child) => child,
-            Err(err) => {
-                tracing::error!("Starting dnstap. ERROR: {err}");
-                cloned_token.cancel();
-                return;
-            }
-        };
+    // Must bind before dnsdist starts: dnsdist connects out to this path, and
+    // if nothing is listening it gives up on dnstap for the rest of the run.
+    tracing::info!("Starting dnstap listener");
+    if let Err(err) = spawn_dnstap_listener(
+        PathBuf::from("./dnstap.sock"),
+        logs_store.clone(),
+        usage_stats.clone(),
+        &tracker,
+        token.clone(),
+    ) {
+        tracing::error!("Starting dnstap listener. ERROR: {err}");
+        token.cancel();
+    }
 
-        tokio::select! {
-            _ = cloned_token.cancelled() => {
-                tracing::info!("dnstap received cancel signal");
-                let _ = child.kill().await;
-            },
-            _ = child.wait() => {
-                tracing::info!("dnstap ended prematurely");
-                cloned_token.cancel();
-            },
-        }
-    });
-
-    tracing::info!("Starting logs_consumer read_logs");
+    // Entries now arrive as dnsdist emits them, so this only expires old ones.
+    // It used to run every second because it also did the ingestion, and those
+    // two log lines per second were the bulk of the container's output.
+    tracing::info!("Starting logs cleanup");
     let cloned_token = token.clone();
     let cloned_logs_store = logs_store.clone();
     let cloned_usage_stats = usage_stats.clone();
     tracker.spawn(async move {
-        let log_consumer = LogsConsumer::new(cloned_logs_store, cloned_usage_stats);
         loop {
-            tracing::info!("logs_consumer read_logs logs-cleanup sleeping for 1 second");
             tokio::select! {
                 _ = cloned_token.cancelled() => {
-                    tracing::info!("logs_consumer read_logs received cancel signal");
+                    tracing::info!("logs cleanup received cancel signal");
                     return;
                 },
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    tracing::info!("logs_consumer read_logs waking up");
-                },
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {},
             }
-
-            tracing::info!("Reading logs");
-            log_consumer.ingest_logs_from_file().await;
-            tracing::info!("Reading logs. DONE");
+            cloned_logs_store.remove_expired_logs();
+            cloned_usage_stats.remove_old_active_ips();
         }
     });
 

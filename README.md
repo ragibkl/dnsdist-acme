@@ -11,7 +11,7 @@ In order to make it easier to deploy onto a live environment and easier to debug
 
 - [dnsdist](https://dnsdist.org/) - dns load balancer. The current config enables handling DNS53, DoT, DoH protocols
 - [rustls-acme](https://crates.io/crates/rustls-acme) - obtains and renews the TLS cert from LetsEncrypt in-process, for use in DoT and DoH protocols. Renewal is event-driven, and the HTTP-01 challenge is served on port 80
-- [golang-dnstap](https://github.com/dnstap/golang-dnstap) - captures query logs from dnsdist and saves it to a file
+- dnstap - query logs are received from dnsdist over a unix socket and parsed in-process. There is no separate dnstap binary and no log file on disk
 - [rust] - main binary to orchestrate the different components. Also serves a web page for viewing the dns logs from the origin ip address
 
 At the moment, this project is available as a Docker container, with all the required components built-in.

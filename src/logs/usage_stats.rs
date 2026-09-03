@@ -5,31 +5,19 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 
-use super::QueryLog;
-
 #[derive(Debug, Clone, Default)]
 pub struct UsageStats {
     active_ips: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
 }
 
 impl UsageStats {
-    pub fn merge_logs(&self, logs_hash_map: &HashMap<String, Vec<QueryLog>>) {
-        let mut last_query_times = self.active_ips.lock().unwrap().clone();
-
-        for (ip, queries) in logs_hash_map.iter() {
-            let Some(last_qt) = queries.last().map(|q| q.query_time) else {
-                continue;
-            };
-
-            match last_query_times.get_mut(ip) {
-                Some(qt) => *qt = last_qt,
-                None => {
-                    last_query_times.insert(ip.to_string(), last_qt);
-                }
-            }
-        }
-
-        *self.active_ips.lock().unwrap() = last_query_times;
+    /// Marks an address active at `seen`.
+    pub fn touch(&self, ip: &str, seen: DateTime<Utc>) {
+        let mut guard = self.active_ips.lock().unwrap();
+        guard
+            .entry(ip.to_string())
+            .and_modify(|t| *t = seen)
+            .or_insert(seen);
     }
 
     pub fn remove_old_active_ips(&self) {
