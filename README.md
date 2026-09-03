@@ -43,7 +43,16 @@ services:
       - TLS_DOMAIN=dns.yourdomain.com
       - TLS_EMAIL=user@example.com
     network_mode: host
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+
+volumes:
+  letsencrypt:
 ```
+
+The `letsencrypt` volume holds the ACME account key and the issued certificate.
+Keep it: without it, recreating the container requests a brand new certificate,
+and Let's Encrypt permits only 5 duplicate certificates per hostname per week.
 
 ## Enabling DoH and DoT protocols
 
@@ -59,7 +68,13 @@ Update the following variables and rerun `docker compose up -d`
 - TLS_EMAIL=user@example.com    # Put a valid email here
 ```
 
-With tls enabled, the server will obtain a TLS cert from LetsEncrypt, keep it updated, and use it to serve DNS traffic over DoH and DoT.
+With tls enabled, the server obtains a TLS cert from LetsEncrypt, keeps it
+updated, and uses it to serve DNS traffic over DoH and DoT. Renewal happens
+automatically at about two thirds of the certificate's lifetime.
+
+Port 80 must be reachable from the internet: that is the only port Let's Encrypt
+validates HTTP-01 challenges on. The container listens there for challenges
+only; the log pages remain on 8080 and 8443.
 
 ## Viewing Logs for Troubleshooting
 
