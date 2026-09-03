@@ -10,12 +10,15 @@ item 3 before starting item 2.**
 ## Context you need
 
 This service is the TLS/DoH/DoT front-end for the public Bancuh DNS resolvers.
-It runs as a supervisor process (`src/main.rs`) that spawns three children:
+It runs as a supervisor process (`src/main.rs`). dnsdist is now its only child;
+ACME and dnstap are handled in-process:
 
 - `dnsdist` — the actual DNS proxy, configured by `dnsdist.conf`
 - ACME — the Let's Encrypt cert is obtained and renewed **in-process** by
   `rustls-acme` (`src/tasks/acme.rs`), not by a child process. See item 3
-- `dnstap` — writes query logs to `logs.yaml`, consumed by `src/logs/`
+- dnstap — query logs arrive from dnsdist over a unix socket and are parsed
+  in-process (`src/logs/framestream.rs`, `src/logs/dnstap_proto.rs`). No child
+  process, no file. See item 4
 
 It is deployed from the `adblock-dns-server` repo
 (`EXAMPLES/default/docker-compose.yml`), where it runs with
@@ -243,7 +246,7 @@ problem than the committed literal, and fixing the literal alone is worthwhile.
 The current key must be treated as permanently compromised — rotate it, do not
 reuse it.
 
-## 3. certbot replaced with in-process ACME — DONE, on branch `acme-native`, not yet merged
+## 3. certbot replaced with in-process ACME — DONE, merged and rolled out to all seven nodes
 
 This supersedes what were previously items 3 and 4: a renewal error taking the
 whole front-end down, and certbot failures being swallowed. Both are gone,
@@ -302,30 +305,61 @@ every other change in this file, it talks to real Let's Encrypt, so a failed
 validation burns rate limit against a live domain. Canary on jp-dns2 (idle, most
 runway) and confirm a real issuance before touching the rest.
 
-## 4. `logs.yaml` read-then-truncate drops log entries
+## 4. dnstap read over a socket instead of a file — DONE, on branch `dnstap-socket`, not yet merged
 
-**Where:** `src/tasks/dnstap.rs:53-56`.
+**What was wrong.** `dnstap` ran as a child appending YAML to `logs.yaml`, which
+the supervisor read and truncated once a second:
 
 ```rust
 let content = tokio::fs::read_to_string("./logs.yaml").await.unwrap_or_default();
 let _ = tokio::fs::write("./logs.yaml", "").await;
 ```
 
-`dnstap` appends to this file continuously while the consumer reads it once a
-second (`src/logs/mod.rs`, `ingest_logs_from_file`). Anything dnstap writes
-between the read and the truncate is silently lost — a steady trickle of dropped
-entries under load, worse the busier the node.
+Two separate operations, so anything dnstap appended in the gap was destroyed
+unread — silently, with nothing counting it. A read landing mid-document also
+produced an unparseable fragment, which was dropped and logged.
 
-It also reads the entire file into memory on every tick, and the read can land
-mid-document, so the trailing partial record is both dropped *and* logged at
-info by `extract_query_logs` (`src/logs/query_log.rs:86`) — which adds log volume
-under exactly the conditions where log retention is already tight.
+That second one was measurable, and measured: **834 lost entries on sg-dns1 in
+roughly two hours, about 6.6% of ingest ticks.** The failures were bursty rather
+than steady, which is what a race looks like. The first loss leaves no trace at
+all, so 834 is a floor, not a total.
 
-**Suggested fix:** rotate rather than truncate (rename and let dnstap reopen), or
-read the dnstap stream directly instead of going via a file. If the file
-approach is kept, track a byte offset and read only what is new.
+**What replaced it.** dnsdist already writes to a unix socket
+(`newFrameStreamUnixLogger`); the `dnstap` process was only relaying it to disk.
+The supervisor now consumes that socket directly, so there is no file and no
+window.
 
----
+No crate does this. `framestream` 0.2.5 provides only an `EncoderWriter` — it
+writes the unidirectional flow and has no reader or control-frame handling.
+dnsdist opens with the *bidirectional* handshake, confirmed by probing a live
+instance:
+
+```text
+00000000 00000022 00000004 00000001 00000016 "protobuf:dnstap.Dnstap"
+escape   len 34   READY    CONTENT_TYPE len 22
+```
+
+So `src/logs/framestream.rs` implements the receiving side (READY → ACCEPT →
+START → data → STOP → FINISH), and `src/logs/dnstap_proto.rs` decodes the five
+protobuf fields we use. That is deliberately not `prost`: five fields out of a
+large schema did not justify vendoring the .proto, a build.rs, and `protoc` in
+the builder image.
+
+The DNS payload arrives as raw wire format, so `query_log.rs` now parses it with
+`hickory-proto` instead of slicing dnstap's text rendering on
+`";; ANSWER SECTION:"`. Parsing either succeeds or fails; there is no
+half-parsed state, which is what made the fragment losses possible.
+
+**Also removed:** the `dnstap` child process, `logs.yaml`, the entire Go build
+stage from the Dockerfile, and the one-second polling loop. That loop logged two
+lines a second at info and was about 92% of the container's log output —
+enough that it actively obstructed debugging the ACME work. Cleanup now runs
+once a minute and only expires old entries.
+
+**Verified:** 18 unit tests, including the exact READY bytes a live dnsdist
+sends and a fuzz over every truncation of a valid frame. End to end, 250 queries
+fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
+— no loss. Image 61MB → 50MB.
 
 ## Lower priority
 

@@ -24,18 +24,11 @@ impl QueryLogs {
         logs_store_guard.retain(|_ip, queries| !queries.is_empty());
     }
 
-    pub fn merge_logs(&self, logs_hash_map: &HashMap<String, Vec<QueryLog>>) {
-        let mut logs_store_guard = self.logs_store.lock().unwrap();
-        for (ip, logs) in logs_hash_map.iter() {
-            match logs_store_guard.get_mut(ip) {
-                Some(existing_logs) => {
-                    existing_logs.extend(logs.clone());
-                }
-                None => {
-                    logs_store_guard.insert(ip.to_string(), logs.clone());
-                }
-            }
-        }
+    /// Records one entry. Ingestion is now per-frame as dnstap delivers it,
+    /// rather than a batch read from a file every second.
+    pub fn push(&self, log: QueryLog) {
+        let mut guard = self.logs_store.lock().unwrap();
+        guard.entry(log.ip.clone()).or_default().push(log);
     }
 
     pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
