@@ -229,22 +229,62 @@ The dnsdist control socket is a Lua console. That is arbitrary code execution
 inside the process that terminates TLS and holds the private keys: an attacker
 could rewrite answers, dump traffic, or change the ACL.
 
-Passing the key as `-k <key>` on the command line (`src/tasks/dnsdist.rs:28`)
-additionally exposes it via `ps` to any user on the host.
+**Already fixed:** the key used to be passed as `-k <key>`, exposing it via `ps`
+to any user on the host. The version bump replaced that with `-C dnsdist.conf`
+(`src/tasks/dnsdist.rs:42`), because dnsdist 2.0 no longer accepts `-k` at all.
+The argv exposure is gone; **the committed literal is not**, and that is the
+remaining problem.
 
-**Suggested fix:** generate a fresh key at container start
-(`openssl rand -base64 32`), hand it to dnsdist's config and to the reload path
-through the environment rather than a literal, and keep it out of the repo. Note
-that dnsdist reads `dnsdist.conf` as Lua, so `os.getenv` is available there —
-the config already uses it for `PORT`, `BACKEND` and `TLS_ENABLED`. Consider
-also setting `setConsoleACL` explicitly rather than relying on its default.
+**Scope, established by inspection.** Worth knowing before choosing a fix:
 
-Prefer a mechanism that keeps the key off the command line entirely if dnsdist
-supports it in the version pinned here; otherwise argv exposure is a smaller
-problem than the committed literal, and fixing the literal alone is worthwhile.
+- `controlSocket()` is **TCP-only** in dnsdist 2.0.4 — there is no unix-socket
+  form, so the console cannot be moved behind filesystem permissions.
+- The default console ACL is `127.0.0.0/8` + `::1/128`, which under
+  `network_mode: host` is the *host's* loopback. Without a key, any local user
+  can connect.
+- `reloadAllCertificates()` is called from exactly one place
+  (`src/tasks/dnsdist.rs:47`) and runs roughly **six times a year per node**.
+  Cert rotation is the console's only use in this codebase.
+- dnsdist 2.0.4 has no file-watch or signal-based cert reload, so removing the
+  console means restarting dnsdist to pick up a new cert.
+
+**Option A — keep the console, generate the key at start.** `openssl rand
+-base64 32` at container start, passed through the environment; `dnsdist.conf`
+already reads env via `os.getenv` (it does so for `PORT`, `BACKEND`,
+`TLS_ENABLED`). Add an explicit `setConsoleACL` rather than relying on the
+default. Keeps `showRules()`, `showServers()` and `topClients()` — which were
+used repeatedly during this review to measure drop rates and identify the
+client responsible for 53% of sg-dns1's traffic.
+
+**Option B — delete the console, restart dnsdist on a new cert.** Removes the
+attack surface entirely rather than guarding it. Costs the diagnostics above,
+and requires `main.rs` to distinguish a deliberate restart from a crash (a
+dnsdist exit currently cancels the token).
+
+Restart downtime was **measured**, not estimated — SIGTERM to answering again,
+three runs in a container with the real image and config: **353 ms, 374 ms,
+42 ms**. The spread suggests it depends on port-rebind timing rather than being
+reliably sub-100ms. Note this understates client impact: a UDP query sent during
+the gap gets no answer at all, so that client waits out *its own* timeout
+(typically 1-5s) before retrying. At jp-dns1's ~86 qps a 400 ms gap touches
+roughly 34 queries.
+
+**Option B+ — overlap instead of gapping.** The DNS and DoH listeners already
+set `reusePort=true`, so a new dnsdist can bind the same ports before the old
+one exits: start it, wait until it answers, then SIGTERM the old. No unanswered
+queries. Two prerequisites: `addTLSLocal` does *not* currently pass `reusePort`,
+so DoT on :853 would still gap (one-line config change); and both processes
+briefly connect to the dnstap socket, which works only because the listener in
+item 4 accepts connections repeatedly and handles each independently. The
+console port conflict that would normally block this disappears precisely
+because B removes the console.
+
+**Status: undecided.** B was preferred for simplicity, but the loss of
+`showServers()`/`topClients()` is a real operational cost that may outweigh the
+security gain, and the B/B+ choice is open.
 
 The current key must be treated as permanently compromised — rotate it, do not
-reuse it.
+reuse it, regardless of which option is chosen.
 
 ## 3. certbot replaced with in-process ACME — DONE, merged and rolled out to all seven nodes
 
@@ -305,7 +345,7 @@ every other change in this file, it talks to real Let's Encrypt, so a failed
 validation burns rate limit against a live domain. Canary on jp-dns2 (idle, most
 runway) and confirm a real issuance before touching the rest.
 
-## 4. dnstap read over a socket instead of a file — DONE, on branch `dnstap-socket`, not yet merged
+## 4. dnstap read over a socket instead of a file — DONE, merged and rolled out to all seven nodes
 
 **What was wrong.** `dnstap` ran as a child appending YAML to `logs.yaml`, which
 the supervisor read and truncated once a second:
