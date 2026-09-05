@@ -39,12 +39,15 @@ impl AppState {
     }
 }
 
+/// The client address as a string, with IPv4-mapped IPv6 rendered as plain
+/// IPv4.
+///
+/// Clients reaching a dual-stack listener over IPv4 arrive as `::ffff:a.b.c.d`,
+/// and this string is the key that `/logs` looks queries up by, so the two
+/// spellings must not produce different keys. `to_canonical` is the operation
+/// that means this, rather than editing the formatted string.
 fn get_ip(addr: SocketAddr) -> String {
-    let ip = addr.ip().to_string();
-    if ip.starts_with("::ffff:") {
-        return ip.replace("::ffff:", "");
-    }
-    ip
+    addr.ip().to_canonical().to_string()
 }
 
 #[axum_macros::debug_handler]
@@ -84,4 +87,40 @@ pub async fn get_logs(
         .unwrap();
 
     Html(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip_of(addr: &str) -> String {
+        get_ip(addr.parse().unwrap())
+    }
+
+    /// The case that matters: a v4 client on a dual-stack listener must key the
+    /// same as the same client seen as plain v4, or `/logs` would show them two
+    /// separate histories depending on which socket accepted them.
+    #[test]
+    fn ipv4_mapped_addresses_render_as_ipv4() {
+        assert_eq!(ip_of("[::ffff:203.0.113.7]:443"), "203.0.113.7");
+        assert_eq!(ip_of("203.0.113.7:443"), "203.0.113.7");
+    }
+
+    #[test]
+    fn genuine_ipv6_is_left_alone() {
+        assert_eq!(ip_of("[2001:db8::1]:443"), "2001:db8::1");
+    }
+
+    /// `::ffff:` is a valid run of hex groups, so a v6 address can contain it
+    /// without being v4-mapped. The previous `replace` implementation handled
+    /// this correctly too -- its `starts_with` guard meant the substring removal
+    /// never ran here, and one `::` per address makes a second occurrence
+    /// impossible anyway. Pinned as a regression test, not a fixed bug.
+    #[test]
+    fn an_ipv6_address_merely_containing_the_prefix_is_not_rewritten() {
+        let addr = "[1:2:3:4::ffff:5]:443";
+        let got = ip_of(addr);
+        assert!(got.contains(':'), "should still be an IPv6 address, got {got}");
+        assert_eq!(got, "1:2:3:4::ffff:5");
+    }
 }

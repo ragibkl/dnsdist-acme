@@ -13,7 +13,6 @@ use handler::AppState;
 use logs::{QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tower_http::services::ServeDir;
 use axum::http::StatusCode;
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer};
 
@@ -27,7 +26,7 @@ use crate::tasks::dnstap::spawn_dnstap_listener;
 #[command(version)]
 #[command(about)]
 struct Args {
-    /// Sets a custom l istener port
+    /// Sets a custom listener port
     #[arg(long, env, value_name = "PORT", default_value = "53")]
     port: u16,
 
@@ -84,7 +83,6 @@ fn make_service(
         .route("/logs", get(get_logs))
         .route("/api/logs", get(get_logs_api))
         .with_state(app_state)
-        .nest_service("/.well-known/", ServeDir::new("./html/.well-known"))
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(1)))
         .layer(ResponseBodyTimeoutLayer::new(Duration::from_secs(1)))
         .layer(TimeoutLayer::with_status_code(

@@ -22,8 +22,8 @@ impl UsageStats {
 
     pub fn remove_old_active_ips(&self) {
         let time_cutoff = Utc::now() - Duration::minutes(10);
-        let mut active_ips_one_day = self.active_ips.lock().unwrap();
-        active_ips_one_day.retain(|_ip, qt| *qt > time_cutoff);
+        let mut active_ips = self.active_ips.lock().unwrap();
+        active_ips.retain(|_ip, qt| *qt > time_cutoff);
     }
 
     pub fn get_active_ips(&self) -> usize {

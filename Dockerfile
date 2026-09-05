@@ -30,10 +30,10 @@ RUN apk add gcompat dnsdist
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
 
-RUN mkdir -p certs html/.well-known
+RUN mkdir -p certs
 COPY dnsdist.conf dnsdist.conf
 
 # set entrypoint
 ENTRYPOINT ["/usr/local/bin/dnsdist-acme"]
 
-EXPOSE 53/tcp 53/udp 80 8080 8443
+EXPOSE 53/tcp 53/udp 80 443 853 8080 8443
