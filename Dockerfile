@@ -30,7 +30,7 @@ RUN apk add gcompat dnsdist
 # copy binary
 COPY --from=builder /code/dnsdist-acme/target/release/dnsdist-acme /usr/local/bin/dnsdist-acme
 
-RUN mkdir -p certs html/.well-known
+RUN mkdir -p certs
 COPY dnsdist.conf dnsdist.conf
 
 # set entrypoint
