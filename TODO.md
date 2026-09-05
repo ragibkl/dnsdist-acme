@@ -109,38 +109,6 @@ Triaged 2026-09-05. Nothing here is urgent; the fleet is healthy and uniform.
   template re-parsed on every request (`:74`); a `LazyLock` registry would fix
   both. Escaping is fine -- `{{ }}` escapes, so no XSS.
 
-### Cheap and low risk
-
-- **`html/.well-known` is vestigial.** `src/main.rs:87` serves it via `ServeDir`
-  on 8080 and 8443, but the ACME challenge has its own listener on port 80
-  (`src/tasks/acme.rs`). It was already unused under certbot's `--standalone`.
-  Delete the directory and the route.
-
-- **`dnsdist.conf:29-30`** -- `addTLSLocal` does not pass `reusePort`, while the
-  DNS and DoH listeners do. Harmless today, and the one-line prerequisite for
-  the overlap restart in B+ below: without it a replacement dnsdist cannot bind
-  :853 alongside the outgoing one, so DoT would gap.
-
-- **`dnsdist.conf:25-26`** -- `doTCP` and `tcpFastOpenSize` are silently ignored
-  by `addDOHLocal`, on 2.0.4 and every version tested. Written expecting an
-  effect they have never had.
-
-- **`src/logs/usage_stats.rs:25`** -- the guard is named `active_ips_one_day`
-  while the cutoff is 10 minutes. Misleading when reading the expiry logic.
-
-- **`src/handler.rs:45`** -- `ip.replace("::ffff:", "")` strips the IPv4-mapped
-  prefix by substring replacement. Guarded by `starts_with`, and a canonical
-  `Display` cannot contain the prefix twice, so cosmetic rather than a bug.
-  `strip_prefix` is the correct operation; `to_canonical()` is cleaner still.
-  `bancuh-dns` does it that way (`src/admin.rs:29`).
-
-- **`src/main.rs:30`** -- typo in the doc comment: "custom l istener port".
-
-- **`Dockerfile:39`** -- `EXPOSE` omits 443 and 853, the DoH/DoT ports. Purely
-  documentary, but wrong. (The rest of the old "README drift" item is resolved:
-  the README now lists all four published architectures and describes the
-  socket-based dnstap correctly.)
-
 ### Needs a decision, not just work
 
 - **Remove the dnsdist console entirely (options B / B+).** Item 2 shipped
@@ -598,3 +566,32 @@ once a minute and only expires old entries.
 sends and a fuzz over every truncation of a valid frame. End to end, 250 queries
 fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
 — no loss. Image 61MB → 50MB.
+
+### 5. The cheap, low-risk cleanups
+
+Seven items cleared in one PR (#8), merged and rolled out to all seven nodes.
+
+- **`doTCP` and `tcpFastOpenSize` removed from `addDOHLocal`.** Not a judgement
+  call -- `--check-config` says so: `Unknown key 'doTCP' given - ignored`. They
+  had never had an effect, on any version tested, and each start logged two
+  warnings about them.
+- **`reusePort` added to `addTLSLocal`,** matching the DNS and DoH listeners.
+  The prerequisite for a B+ overlap restart, should that ever be wanted.
+- **`html/.well-known` and its `ServeDir` route deleted.** One empty `.keep`
+  file, dead three ways: certbot always ran `--standalone`, which serves the
+  challenge itself and never writes a webroot; the route was mounted on 8080 and
+  8443 while HTTP-01 validation only connects on port 80; and rustls-acme now
+  serves it in-process from memory. Also retired `tower-http`'s `fs` feature.
+- **`get_ip` uses `to_canonical()`** rather than editing the formatted string.
+  Behaviour unchanged -- the old `starts_with` guard was correct and a second
+  `::ffff:` is impossible in one address, so the earlier note here calling it
+  "cosmetic rather than a bug" was right. Three tests now pin it, because this
+  string is the key `/logs` looks queries up by.
+- Guard renamed from `active_ips_one_day`, a doc typo fixed, and `EXPOSE`
+  given 443 and 853.
+
+**What the canary caught.** The first attempt deleted the directory from the
+repo but left `Dockerfile:33` running `mkdir -p certs html/.well-known`, so
+every image kept shipping it. Invisible in the diff; visible only inside a
+container built from the branch. Worth remembering: for anything about what is
+*in* the image, check the image.
