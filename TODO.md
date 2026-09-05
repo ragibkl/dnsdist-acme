@@ -208,7 +208,7 @@ Image shrinks 160 MB → 126 MB. `.tool-versions` moves to `rust 1.91.1`.
 Go stage builds on go 1.25.10; and `reloadAllCertificates()` was exercised end
 to end against 2.0.4 with TLS enabled and real certificates.
 
-## 2. dnsdist control-socket key is committed to a public repo — DONE, merged and rolled out to all seven nodes
+## 2. console key generated at start instead of committed — DONE, merged and rolled out to all seven nodes
 
 **Where:** `dnsdist.conf:33-34`, and the same literal again in
 `src/tasks/dnsdist.rs:28-29`.
@@ -430,7 +430,7 @@ fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
   working as designed, and may be an accepted tradeoff, but it deserves an
   explicit decision the way the open-resolver item below got one.
 
-- **`dnsdist.conf:13`** — `setACL({ '0.0.0.0/0', '::/0' })` makes this an open
+- **`dnsdist.conf:14`** — `setACL({ '0.0.0.0/0', '::/0' })` makes this an open
   resolver. That is intentional for a public service, but on UDP/53 it is usable
   for amplification, with the QPS rule as the only mitigation. Worth a
   deliberate decision, and possibly response-rate limiting.
@@ -440,22 +440,20 @@ fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
   (`src/tasks/acme.rs`). It was already unused under certbot's `--standalone`;
   now there is no ambiguity. Delete it, along with the `ServeDir` route.
 
-- **`dnsdist.conf:24-25`** — `doTCP` and `tcpFastOpenSize` are silently ignored
-  by `addDOHLocal`, on 1.8.2 today and on every version tested. They were
+- **`dnsdist.conf:25-26`** — `doTCP` and `tcpFastOpenSize` are silently ignored
+  by `addDOHLocal`, on 2.0.4 today and on every version tested. They were
   written expecting an effect and have never had one.
 
-- **`src/logs/usage_stats.rs:17-32`** — `merge_logs` clones the map under one
-  lock, mutates the clone, then overwrites under a second lock, so a concurrent
-  writer's update would be lost. There is exactly one writer today, so it is
-  benign — but it is a lost-update pattern on a `Clone` + `Arc` type that looks
-  safe to call from anywhere, and it copies the whole map every second. Its
-  guard is also still named `active_ips_one_day` while the cutoff is 10 minutes.
+- **`dnsdist.conf:29-30`** — `addTLSLocal` does not pass `reusePort`, while the
+  DNS and DoH listeners do. Harmless today. It is the one-line prerequisite for
+  the overlap restart in option B+ above: without it a replacement dnsdist
+  cannot bind :853 alongside the outgoing one, so DoT would still gap.
 
-- **`src/logs/query_log.rs:31`** — `parse_query_time` uses `unwrap_or_default()`,
-  yielding the Unix epoch on a parse failure. That is older than the 10-minute
-  cutoff, so `remove_expired_logs` deletes such entries immediately: a dnstap
-  timestamp format change would make `/logs` silently go empty with nothing in
-  the logs to explain it.
+- **`src/logs/usage_stats.rs:25`** — the guard is named `active_ips_one_day`
+  while the cutoff is 10 minutes. Cosmetic, but misleading when reading the
+  expiry logic. (The lost-update `merge_logs` pattern previously listed here was
+  removed with the file-ingestion loop in item 4; entries now arrive per-event
+  and there is no read-modify-write.)
 
 - **`src/logs/query_logs.rs`** — `QueryLogs` has no per-IP cap, so a single noisy
   source is bounded only by the 10-minute expiry. `bancuh-dns` caps at
@@ -512,8 +510,9 @@ fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
 ## Verifying changes
 
 **`tests/e2e/run.sh`** is the end-to-end ACME suite, run against a local
-[Pebble](https://github.com/letsencrypt/pebble). Nine assertions covering first
-issuance, restart with a warm cache, and re-issuance — each checking the
+[Pebble](https://github.com/letsencrypt/pebble). Sixteen assertions covering
+first issuance, restart with a warm cache, re-issuance, and the console/cert
+reload path — each certificate check reading what
 certificate **dnsdist actually serves on :853**, not the file on disk. Those are
 different claims and only the second matters to a client. Takes about 90
 seconds.
@@ -544,11 +543,14 @@ What also works:
      PORT=53 BACKEND=127.0.0.1:1153 TLS_ENABLED=true \
      dnsdist --check-config --config dnsdist.conf'
   ```
-- **Reading live state** from a node, given the control-socket key:
+- **Reading live state** from a node:
   ```sh
-  CID=$(docker ps --filter ancestor=ragibkl/dnsdist-acme --format '{{.Names}}' | head -1)
-  docker exec $CID dnsdist -c 127.0.0.1 -k "$KEY" -e 'showRules()'
+  scripts/console.sh jp-dns1 'showRules()'
   ```
+  The key is generated per process start, so there is no constant to paste; the
+  script reads it back from the running dnsdist. Do not use `-k <key>` — dnsdist
+  2.0 rejects it, and the console client exits 0 either way, so a failure looks
+  like success.
   `showRules()` gives per-rule match counts, `showServers()` totals and latency,
   `topClients(n)` the heaviest sources. Capture a baseline *before* changing a
   rule; you cannot get it afterwards.
