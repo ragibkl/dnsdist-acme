@@ -208,7 +208,7 @@ Image shrinks 160 MB → 126 MB. `.tool-versions` moves to `rust 1.91.1`.
 Go stage builds on go 1.25.10; and `reloadAllCertificates()` was exercised end
 to end against 2.0.4 with TLS enabled and real certificates.
 
-## 2. dnsdist control-socket key is committed to a public repo — DONE on branch `console-key-from-env`, option A
+## 2. dnsdist control-socket key is committed to a public repo — DONE, merged and rolled out to all seven nodes
 
 **Where:** `dnsdist.conf:33-34`, and the same literal again in
 `src/tasks/dnsdist.rs:28-29`.
@@ -279,7 +279,11 @@ item 4 accepts connections repeatedly and handles each independently. The
 console port conflict that would normally block this disappears precisely
 because B removes the console.
 
-**Status: A implemented.** B/B+ remain available later — nothing in A blocks
+**Status: A shipped**, all seven nodes on one image digest, each with its own
+key. `scripts/console.sh <node> '<lua>'` reads the key back from the running
+dnsdist, so the console stays as reachable as the literal made it.
+
+B/B+ remain available later — nothing in A blocks
 them, and the restart machinery they need is untouched by this change.
 
 **What A turned up.** The console path was exercised by nothing: the reload is
