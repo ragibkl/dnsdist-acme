@@ -620,6 +620,7 @@ dependencies = [
  "axum",
  "axum-macros",
  "axum-server",
+ "base64",
  "chrono",
  "clap",
  "futures",
