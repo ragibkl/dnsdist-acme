@@ -19,7 +19,7 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, Tim
 
 use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::acme::setup_acme;
-use crate::tasks::dnsdist::spawn_dnsdist;
+use crate::tasks::dnsdist::{ConsoleKey, spawn_dnsdist};
 use crate::tasks::dnstap::spawn_dnstap_listener;
 
 #[derive(Parser, Debug)]
@@ -118,6 +118,12 @@ async fn main() -> anyhow::Result<()> {
     let backend = args.backend;
     let port = args.port;
 
+    // Generated once per start and shared by the dnsdist child and the console
+    // client that reloads certificates into it -- both derive the key from the
+    // same value, so it must not be regenerated per use. Deliberately not in
+    // `Args`: it is neither configurable nor loggable.
+    let console_key = ConsoleKey::generate()?;
+
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
@@ -142,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
             tls_enabled,
             backend,
             port,
+            console_key.clone(),
             &tracker,
             token.clone(),
         );
@@ -243,7 +250,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting dnsdist server");
     let cloned_token = token.clone();
     tracker.spawn(async move {
-        let mut child = match spawn_dnsdist(tls_enabled, backend, port) {
+        let mut child = match spawn_dnsdist(tls_enabled, backend, port, &console_key) {
             Ok(child) => child,
             Err(err) => {
                 tracing::error!("Starting dnsdist server. ERROR: {err}");

@@ -208,7 +208,7 @@ Image shrinks 160 MB → 126 MB. `.tool-versions` moves to `rust 1.91.1`.
 Go stage builds on go 1.25.10; and `reloadAllCertificates()` was exercised end
 to end against 2.0.4 with TLS enabled and real certificates.
 
-## 2. dnsdist control-socket key is committed to a public repo
+## 2. dnsdist control-socket key is committed to a public repo — DONE on branch `console-key-from-env`, option A
 
 **Where:** `dnsdist.conf:33-34`, and the same literal again in
 `src/tasks/dnsdist.rs:28-29`.
@@ -279,12 +279,27 @@ item 4 accepts connections repeatedly and handles each independently. The
 console port conflict that would normally block this disappears precisely
 because B removes the console.
 
-**Status: undecided.** B was preferred for simplicity, but the loss of
-`showServers()`/`topClients()` is a real operational cost that may outweigh the
-security gain, and the B/B+ choice is open.
+**Status: A implemented.** B/B+ remain available later — nothing in A blocks
+them, and the restart machinery they need is untouched by this change.
 
-The current key must be treated as permanently compromised — rotate it, do not
-reuse it, regardless of which option is chosen.
+**What A turned up.** The console path was exercised by nothing: the reload is
+gated on dnsdist already running, and every e2e scenario restarts the container,
+so `publish()` always took the "dnsdist not started yet" branch. Adding a test
+for it immediately found that **dnsdist's console client exits 0 even when it
+refuses to connect.** `run_dnsdist_reload_cert` only checked the exit status, so
+a wrong key would have been reported as a successful reload.
+
+There are two distinct rejection messages, both exiting 0, sharing no common
+substring — "the currently configured console key is not valid" when the client
+has no key, and "likely indicating a key mismatch" when it has the wrong one.
+Only the second was found, by a deliberate wrong-key negative control; matching
+the first alone would have looked correct and caught nothing.
+
+That bug predates this change and applied to the committed key too. It is the
+reason the reload is now checked on output rather than status.
+
+The old key must still be treated as permanently compromised. It is out of the
+tree but remains in git history.
 
 ## 3. certbot replaced with in-process ACME — DONE, merged and rolled out to all seven nodes
 

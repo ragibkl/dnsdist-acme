@@ -10,13 +10,27 @@
 #                             so a cache that only wrote on store would leave
 #                             dnsdist's files stale on every restart
 #   3. re-issuance         -- a genuinely new certificate reaches dnsdist
+#   4. console reachable   -- the cert reload path works
+#
+# Step 4 exists because nothing else exercises the control socket. The reload is
+# gated on dnsdist already running, and every scenario above restarts the
+# container, so publish() always takes the "dnsdist not started yet" branch. In
+# production the console is used roughly six times a year, at renewal. A broken
+# key would therefore stay silent for ~60 days and then fail as an expiry
+# outage, with a valid certificate sitting unread on disk.
 #
 # Usage: tests/e2e/run.sh [--keep]
 set -uo pipefail
 
 cd "$(dirname "$0")"
 PROJECT=dnsdist-acme-e2e
-COMPOSE="docker compose -p $PROJECT"
+# The image is pinned through a generated override file rather than the
+# ${DNSDIST_ACME_IMAGE} interpolation alone. Compose interpolates in the client,
+# so any setup where the docker CLI does not inherit this shell's environment
+# -- distrobox/host-exec, sudo without -E, some CI shells -- silently resolves
+# the default instead and tests a stale image. A file crosses those boundaries.
+OVERRIDE=docker-compose.image.yml
+COMPOSE="docker compose -p $PROJECT -f docker-compose.yml -f $OVERRIDE"
 KEEP="${1:-}"
 
 pass=0; fail=0
@@ -26,6 +40,7 @@ bad()  { echo "  FAIL  $1"; fail=$((fail+1)); }
 cleanup() {
   if [ "$KEEP" != "--keep" ]; then
     $COMPOSE down -v --remove-orphans >/dev/null 2>&1
+    rm -f "$OVERRIDE"
   fi
 }
 trap cleanup EXIT
@@ -64,9 +79,36 @@ wait_for_cert_files() {
   return 1
 }
 
+IMAGE_UNDER_TEST="${DNSDIST_ACME_IMAGE:-dnsdist-acme:acme}"
+expected_id=$(docker image inspect -f '{{.Id}}' "$IMAGE_UNDER_TEST" 2>/dev/null)
+if [ -z "$expected_id" ]; then
+  echo "image $IMAGE_UNDER_TEST not found locally -- build it first"
+  exit 1
+fi
+
+cat > "$OVERRIDE" <<YAML
+services:
+  dnsdist-acme:
+    image: $IMAGE_UNDER_TEST
+YAML
+
 echo "== bringing up pebble + dnsdist-acme (clean state) =="
+echo "   image under test: $IMAGE_UNDER_TEST (${expected_id:7:12})"
+$COMPOSE down -v --remove-orphans >/dev/null 2>&1
 $COMPOSE down -v --remove-orphans >/dev/null 2>&1
 $COMPOSE up -d >/dev/null 2>&1 || { echo "compose up failed"; exit 1; }
+
+# Asserted rather than assumed. A stale local image will happily pass most of
+# this suite -- the old one even carries a literal console key, so the console
+# checks below would authenticate and prove nothing.
+running_id=$(docker inspect -f '{{.Image}}' "$($COMPOSE ps -q dnsdist-acme)" 2>/dev/null)
+if [ "$running_id" = "$expected_id" ]; then
+  ok "container is running the image under test"
+else
+  bad "container is NOT running $IMAGE_UNDER_TEST (running ${running_id:7:12}, expected ${expected_id:7:12})"
+  echo "  refusing to report on a different image than the one requested"
+  exit 1
+fi
 
 echo
 echo "== 1. first issuance =="
@@ -141,6 +183,68 @@ if [ -n "$second" ] && [ "$second" != "$first" ]; then
 else
   bad "dnsdist is still serving the old certificate -- reload did not take effect"
 fi
+
+echo
+echo "== 4. dnsdist console, the certificate reload path =="
+# The key never enters the container's own environment -- it is generated in the
+# supervisor and handed to children via Command::env() -- so a plain `exec` here
+# cannot authenticate. Read it back from the dnsdist child and supply it the way
+# run_dnsdist_reload_cert does, which is what exercises the getenv/setKey/ACL
+# path in dnsdist.conf.
+dnsdist_key() {
+  $COMPOSE exec -T dnsdist-acme sh -c \
+    'tr "\0" "\n" < /proc/$(pgrep -n dnsdist)/environ | grep "^CONSOLE_KEY=" | cut -d= -f2-' 2>/dev/null \
+    | tr -d "[:space:]"
+}
+
+key_a=$(dnsdist_key)
+console=$($COMPOSE exec -T -e "CONSOLE_KEY=$key_a" dnsdist-acme sh -c \
+  'dnsdist -C dnsdist.conf -c 127.0.0.1 -e "showVersion()"' 2>&1)
+
+# Asserted on output, not exit status: the console client exits 0 even when it
+# rejects the key, which is why run_dnsdist_reload_cert inspects output too.
+echo "$console" | grep -qi "not valid\|key mismatch\|closed by the server\|Unable to connect\|refused" \
+  && bad "console rejected the generated key: $(echo "$console" | tail -1)" \
+  || ok "console accepted the generated key"
+
+echo "$console" | grep -qi "dnsdist" \
+  && ok "console returned a version string" \
+  || bad "console produced no version output: $(echo "$console" | tail -2 | tr '\n' ' ')"
+
+# The key is handed to children via Command::env(), so it is deliberately absent
+# from the supervisor's own environment -- nothing that can read /proc/1/environ
+# learns it, and it is not inherited by any future child by accident.
+pid1_key=$($COMPOSE exec -T dnsdist-acme sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c "^CONSOLE_KEY=" || true' 2>/dev/null | tr -d "[:space:]")
+[ "$pid1_key" = "0" ] \
+  && ok "key is absent from the supervisor's own environment" \
+  || bad "CONSOLE_KEY leaked into the supervisor environment"
+
+# The property the whole change rests on: a fresh key per start, not a constant
+# baked into the image.
+[ ${#key_a} -ge 40 ] \
+  && ok "dnsdist received a 32-byte key through its environment" \
+  || bad "no usable CONSOLE_KEY in the dnsdist environment (got ${#key_a} chars)"
+
+$COMPOSE restart dnsdist-acme >/dev/null 2>&1
+wait_for_cert_files 45 >/dev/null 2>&1
+key_b=""
+for _ in $(seq 1 20); do
+  key_b=$(dnsdist_key)
+  [ ${#key_b} -ge 40 ] && break
+  sleep 2
+done
+
+if [ ${#key_b} -ge 40 ] && [ "$key_a" != "$key_b" ]; then
+  ok "a different key after restart (generated per start, not baked in)"
+elif [ "$key_a" = "$key_b" ]; then
+  bad "same key across restarts -- it is a constant, not generated"
+else
+  bad "could not read the key after restart"
+fi
+
+grep -rq "setKey('" ../../dnsdist.conf \
+  && bad "dnsdist.conf still contains a literal key" \
+  || ok "dnsdist.conf holds no literal key"
 
 echo
 echo "== result: $pass passed, $fail failed =="

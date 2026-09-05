@@ -14,7 +14,7 @@ use rustls_acme::{AccountCache, AcmeConfig, CertCache, ResolvesServerCertAcme, U
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use super::dnsdist::run_dnsdist_reload_cert;
+use super::dnsdist::{ConsoleKey, run_dnsdist_reload_cert};
 
 /// Skips verification of the ACME *server's* certificate. Only for pointing at
 /// a local Pebble instance in tests, which signs with an ephemeral CA that is
@@ -112,6 +112,9 @@ pub struct DnsdistCertCache {
     /// nothing to reload until main flips this.
     dnsdist_running: Arc<AtomicBool>,
     reload_args: (bool, SocketAddr, u16),
+    /// Client and server must derive the same console key, so the one main
+    /// generated is carried here rather than made afresh per reload.
+    console_key: ConsoleKey,
     /// Signals main that a certificate is on disk and dnsdist can start.
     ready_tx: watch::Sender<bool>,
 }
@@ -151,7 +154,7 @@ impl DnsdistCertCache {
         }
 
         let (tls_enabled, backend, port) = self.reload_args;
-        match run_dnsdist_reload_cert(tls_enabled, backend, port).await {
+        match run_dnsdist_reload_cert(tls_enabled, backend, port, &self.console_key).await {
             Ok(()) => tracing::info!("acme: reloaded certificates into dnsdist"),
             Err(err) => tracing::error!("acme: reloading certificates into dnsdist failed: {err}"),
         }
@@ -238,6 +241,7 @@ pub fn setup_acme(
     tls_enabled: bool,
     backend: SocketAddr,
     port: u16,
+    console_key: ConsoleKey,
     tracker: &TaskTracker,
     token: CancellationToken,
 ) -> Acme {
@@ -249,6 +253,7 @@ pub fn setup_acme(
         certs_dir,
         dnsdist_running: dnsdist_running.clone(),
         reload_args: (tls_enabled, backend, port),
+        console_key,
         ready_tx,
     };
 
