@@ -1,11 +1,14 @@
 # TODO
 
 Findings from a review of this repo, originally written 2026-09-01 and revised
-the same day after verifying every item against the tree, against a real
-`docker build`, and against the seven live production nodes.
+since against the tree, against a real `docker build`, and against the seven
+live production nodes.
 
-Ordered by priority. **Items 2 and 3 are order-dependent — read the note on
-item 3 before starting item 2.**
+Everything originally filed as items 0-4 is merged and rolled out; those are
+kept at the end as **Done**, for the reasoning rather than the status. What
+remains is triaged below. References here are checked against the tree when
+they are touched -- several items in earlier revisions described code that no
+longer existed.
 
 ## Context you need
 
@@ -80,7 +83,183 @@ Useful consequences:
 
 ---
 
-## 0. Rate limit — DONE, merged and rolled out to all seven nodes
+## Open items
+
+Triaged 2026-09-05. Nothing here is urgent; the fleet is healthy and uniform.
+
+### Worth doing next
+
+- **`src/logs/query_logs.rs` has no per-IP cap.** A single noisy source is
+  bounded only by the 10-minute expiry. `bancuh-dns` caps at `MAX_PER_IP = 1000`
+  (`bancuh-dns/src/query_log.rs:11`). Commit `bece86a` ("reduce logs and ip
+  stats memory") suggests this has been hit at least once. Current RSS (40-73 MB
+  of 992 MB) shows no present pressure, so this is insurance, not a fire.
+
+- **`serde_yaml` is a dead dependency.** It is declared in `Cargo.toml:24` and
+  used **nowhere in `src/`** -- the YAML ingestion path it served was deleted
+  with the dnstap rewrite. Earlier revisions of this file called it a risky swap
+  because it "parses dnstap output on the ingestion path"; that is no longer
+  true. It is now a one-line deletion, which also retires an archived,
+  unmaintained crate (`0.9.34+deprecated`). Verify with `grep -rn serde_yaml src/`
+  before removing.
+
+- **`src/handler.rs:84`** -- `render_template(...).unwrap()` panics inside a
+  request handler. The template is `include_str!`-ed and static so the risk is
+  low, but a panic here is avoidable. The registry is also rebuilt and the
+  template re-parsed on every request (`:74`); a `LazyLock` registry would fix
+  both. Escaping is fine -- `{{ }}` escapes, so no XSS.
+
+### Cheap and low risk
+
+- **`html/.well-known` is vestigial.** `src/main.rs:87` serves it via `ServeDir`
+  on 8080 and 8443, but the ACME challenge has its own listener on port 80
+  (`src/tasks/acme.rs`). It was already unused under certbot's `--standalone`.
+  Delete the directory and the route.
+
+- **`dnsdist.conf:29-30`** -- `addTLSLocal` does not pass `reusePort`, while the
+  DNS and DoH listeners do. Harmless today, and the one-line prerequisite for
+  the overlap restart in B+ below: without it a replacement dnsdist cannot bind
+  :853 alongside the outgoing one, so DoT would gap.
+
+- **`dnsdist.conf:25-26`** -- `doTCP` and `tcpFastOpenSize` are silently ignored
+  by `addDOHLocal`, on 2.0.4 and every version tested. Written expecting an
+  effect they have never had.
+
+- **`src/logs/usage_stats.rs:25`** -- the guard is named `active_ips_one_day`
+  while the cutoff is 10 minutes. Misleading when reading the expiry logic.
+
+- **`src/handler.rs:45`** -- `ip.replace("::ffff:", "")` strips the IPv4-mapped
+  prefix by substring replacement. Guarded by `starts_with`, and a canonical
+  `Display` cannot contain the prefix twice, so cosmetic rather than a bug.
+  `strip_prefix` is the correct operation; `to_canonical()` is cleaner still.
+  `bancuh-dns` does it that way (`src/admin.rs:29`).
+
+- **`src/main.rs:30`** -- typo in the doc comment: "custom l istener port".
+
+- **`Dockerfile:39`** -- `EXPOSE` omits 443 and 853, the DoH/DoT ports. Purely
+  documentary, but wrong. (The rest of the old "README drift" item is resolved:
+  the README now lists all four published architectures and describes the
+  socket-based dnstap correctly.)
+
+### Needs a decision, not just work
+
+- **Remove the dnsdist console entirely (options B / B+).** Item 2 shipped
+  option A -- a key generated per process start -- which closed the actual
+  vulnerability. B deletes the console and restarts dnsdist to pick up a
+  renewed certificate; B+ overlaps the restart via `reusePort` so no query is
+  dropped. Both cost `showServers()`, `topClients()` and `showRules()`, which
+  are the tools used to measure every change in this file. Measured restart
+  downtime for plain B: 353 ms, 374 ms, 42 ms across three runs, roughly six
+  times a year per node. **Recommendation: leave it.** A already removed the
+  published secret; B/B+ trade real diagnostics for a console that is now
+  key-guarded and loopback-only. Full analysis in item 2 under Done.
+
+- **`src/handler.rs:55`, `:68`** -- every `/logs` request logs at info. Minor
+  here, but the sibling repo has already had to cut per-query logging because
+  container log retention had fallen to ten minutes. Same pressure applies.
+
+### Not this repo
+
+- **jp-dns2 receives almost no traffic.** jp-dns1 served 213,603 queries in the
+  measurement window; jp-dns2 served 691, a 300:1 split. sg is 6.5:1. jp-dns2
+  answers correctly over UDP, DoT and DoH, so the node is healthy -- it simply
+  is not being asked. If jp-dns1 fails, the standby is one nothing is configured
+  to use. Worth investigating in `adblock-dns-server`.
+
+## Decided and accepted
+
+Recorded so they are not re-filed as findings. Both are the product working as
+designed, confirmed by the maintainer 2026-09-05.
+
+- **`/logs` shows query history to anyone sharing your public IP.**
+  `src/handler.rs:57` and `:70` key purely on the source IP of the HTTP request,
+  so behind NAT or CGNAT -- where a carrier may put thousands of subscribers on
+  one address -- any of them can read the others' query history. Port 8080 is
+  plain HTTP, so it is cleartext on the wire too. **Intentional.** It is what
+  makes the page useful without accounts.
+
+- **`dnsdist.conf:14`** -- `setACL({ '0.0.0.0/0', '::/0' })` makes this an open
+  resolver, usable for amplification on UDP/53. **Intentional**: it is a public
+  adblock DNS service and must stay open. Mitigation therefore has to come from
+  rate limiting rather than the ACL -- see item 0 under Done, which truncates
+  over UDP rather than dropping, so a spoofed source cannot complete the
+  handshake and a truncated response carries no amplification gain. Live
+  `showRules()` on jp-dns1 confirms it working: 97 truncations, 0 drops.
+
+
+## Verifying changes
+
+**`tests/e2e/run.sh`** is the end-to-end ACME suite, run against a local
+[Pebble](https://github.com/letsencrypt/pebble). Sixteen assertions covering
+first issuance, restart with a warm cache, re-issuance, and the console/cert
+reload path — each certificate check reading the certificate **dnsdist actually
+serves on :853**, not the file on disk. Those are
+different claims and only the second matters to a client. Takes about 90
+seconds.
+
+It is the only check that catches a broken challenge route. The axum
+path-parameter syntax (`{token}` on 0.8, `:token` on 0.7) compiles either way
+with no warning and fails only at runtime; getting it wrong means the
+certificate never issues, dnsdist never starts, and the node is fully down. That
+bug was introduced and caught twice during this work.
+
+`cargo build --release`, `cargo test` and `cargo clippy` all work since the
+toolchain bump. Note the clippy package on Alpine is `rust-clippy`, not
+`clippy`, and `apk add` is atomic — a wrong package name aborts the whole
+install and leaves you without cargo:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
+  'apk add --quiet rust cargo build-base cmake perl rust-clippy; cargo test --release'
+```
+
+What also works:
+
+- **`docker build .`** — passes, and catches base image and dependency problems.
+- **dnsdist config syntax**, against any version, without deploying:
+  ```sh
+  docker run --rm -v "$PWD/dnsdist.conf:/w/dnsdist.conf:ro" -w /w alpine:3.23 sh -c \
+    'apk add dnsdist >/dev/null 2>&1;
+     PORT=53 BACKEND=127.0.0.1:1153 TLS_ENABLED=true \
+     dnsdist --check-config --config dnsdist.conf'
+  ```
+- **Reading live state** from a node:
+  ```sh
+  scripts/console.sh jp-dns1 'showRules()'
+  ```
+  The key is generated per process start, so there is no constant to paste; the
+  script reads it back from the running dnsdist. Do not use `-k <key>` — dnsdist
+  2.0 rejects it, and the console client exits 0 either way, so a failure looks
+  like success.
+  `showRules()` gives per-rule match counts, `showServers()` totals and latency,
+  `topClients(n)` the heaviest sources. Capture a baseline *before* changing a
+  rule; you cannot get it afterwards.
+
+For anything touching ACME, use Pebble (`tests/e2e/`) rather than Let's
+Encrypt. Failed validations against production count against a per-domain weekly
+rate limit on a live service, and there is no way to undo one.
+
+Do not deploy to the production nodes without the owner's say-so. They are
+listed in `adblock-dns-server/scripts/deploy.sh`, and that script deploys to
+**all seven at once**; a canary is a `git pull && ./start.sh` on a single host,
+or better, pinning one node to a branch tag (see "Deployment path" above).
+
+**Node-specific cautions:**
+
+- **sg-dns2 serves the maintainer's own laptop.** Do not disrupt it.
+- **jp-dns2 is the safe canary for anything image-level** — it is healthy but
+  carries almost no traffic. For the same reason it is *useless* for validating
+  rate-limit changes; use jp-dns1 for those.
+
+
+---
+
+## Done
+
+Merged and rolled out to all seven nodes. Kept for the reasoning, which is
+the part that is hard to reconstruct.
+
+### 0. Rate limit
 
 **Where:** `dnsdist.conf:41`.
 
@@ -125,7 +304,7 @@ Note `dnsdist.conf` sets none of `setMaxTCPClientThreads`,
 defaults. Shifting UDP traffic onto TCP is the one plausible way this degrades
 service, and is what the canary is watching for.
 
-## 1. Stale base image and unpinned build dependencies — DONE, merged and rolled out to all seven nodes
+### 1. Stale base image and unpinned build dependencies
 
 **Where:** `Dockerfile:2`, `:23`, `:29` — all three stages were `alpine:3.19`.
 
@@ -135,7 +314,7 @@ The running image contained **dnsdist 1.8.2-r1, certbot 2.7.4, gcompat
 1.1.0-r4**. PowerDNS secpoll reports 1.8.2 on every production node as
 `Security Update Recommended: Unsupported release (EOL)`.
 
-### Choosing the target: 3.23, not 3.22
+#### Choosing the target: 3.23, not 3.22
 
 Both packaged versions carry **mandatory** advisories, but they are not
 equivalent:
@@ -160,7 +339,7 @@ building dnsdist from source or leaving Alpine. **Follow-up: watch for a 2.0.7
 package.** The applicability judgement above is about this config and is not
 quoted from the advisories; re-check it before relying on it.
 
-### The bump would have silently broken cert reloads
+#### The bump would have silently broken cert reloads
 
 **dnsdist 2.0 rejects a console key passed as `-k`.** Verified against a running
 instance of each version:
@@ -183,7 +362,7 @@ it needs the same `PORT`/`BACKEND`/`TLS_ENABLED` env vars as `spawn_dnsdist`;
 without them it still connects but logs a spurious
 `Error creating new server with address`.
 
-### The Rust side, which was the forced part
+#### The Rust side, which was the forced part
 
 `Cargo.toml:10` had `aws-lc-rs = { version = "*", features = ["bindgen"] }` — a
 wildcard on a cryptography crate. Worse, the locked `aws-lc-sys 0.20.1` **only
@@ -208,7 +387,7 @@ Image shrinks 160 MB → 126 MB. `.tool-versions` moves to `rust 1.91.1`.
 Go stage builds on go 1.25.10; and `reloadAllCertificates()` was exercised end
 to end against 2.0.4 with TLS enabled and real certificates.
 
-## 2. console key generated at start instead of committed — DONE, merged and rolled out to all seven nodes
+### 2. console key generated at start instead of committed
 
 **Where:** `dnsdist.conf:33-34`, and the same literal again in
 `src/tasks/dnsdist.rs:28-29`.
@@ -305,7 +484,7 @@ reason the reload is now checked on output rather than status.
 The old key must still be treated as permanently compromised. It is out of the
 tree but remains in git history.
 
-## 3. certbot replaced with in-process ACME — DONE, merged and rolled out to all seven nodes
+### 3. certbot replaced with in-process ACME
 
 This supersedes what were previously items 3 and 4: a renewal error taking the
 whole front-end down, and certbot failures being swallowed. Both are gone,
@@ -364,7 +543,7 @@ every other change in this file, it talks to real Let's Encrypt, so a failed
 validation burns rate limit against a live domain. Canary on jp-dns2 (idle, most
 runway) and confirm a real issuance before touching the rest.
 
-## 4. dnstap read over a socket instead of a file — DONE, merged and rolled out to all seven nodes
+### 4. dnstap read over a socket instead of a file
 
 **What was wrong.** `dnstap` ran as a child appending YAML to `logs.yaml`, which
 the supervisor read and truncated once a second:
@@ -419,154 +598,3 @@ once a minute and only expires old entries.
 sends and a fuzz over every truncation of a valid frame. End to end, 250 queries
 fired at 8-way parallelism produced 250 answered by dnsdist and **250 captured**
 — no loss. Image 61MB → 50MB.
-
-## Lower priority
-
-- **`/logs` shows DNS query history to anyone sharing your public IP.**
-  `src/handler.rs:57`, `:70` key purely on the source IP of the HTTP request.
-  Behind NAT or CGNAT — where a mobile carrier may put thousands of subscribers
-  on one address — any of them can read the others' query history. Port 8080 is
-  plain HTTP, so it is cleartext on the wire too. This is the product feature
-  working as designed, and may be an accepted tradeoff, but it deserves an
-  explicit decision the way the open-resolver item below got one.
-
-- **`dnsdist.conf:14`** — `setACL({ '0.0.0.0/0', '::/0' })` makes this an open
-  resolver. That is intentional for a public service, but on UDP/53 it is usable
-  for amplification, with the QPS rule as the only mitigation. Worth a
-  deliberate decision, and possibly response-rate limiting.
-
-- **`html/.well-known` is now definitely vestigial.** `src/main.rs` serves it on
-  8080 and 8443, but the ACME challenge is served by its own listener on port 80
-  (`src/tasks/acme.rs`). It was already unused under certbot's `--standalone`;
-  now there is no ambiguity. Delete it, along with the `ServeDir` route.
-
-- **`dnsdist.conf:25-26`** — `doTCP` and `tcpFastOpenSize` are silently ignored
-  by `addDOHLocal`, on 2.0.4 today and on every version tested. They were
-  written expecting an effect and have never had one.
-
-- **`dnsdist.conf:29-30`** — `addTLSLocal` does not pass `reusePort`, while the
-  DNS and DoH listeners do. Harmless today. It is the one-line prerequisite for
-  the overlap restart in option B+ above: without it a replacement dnsdist
-  cannot bind :853 alongside the outgoing one, so DoT would still gap.
-
-- **`src/logs/usage_stats.rs:25`** — the guard is named `active_ips_one_day`
-  while the cutoff is 10 minutes. Cosmetic, but misleading when reading the
-  expiry logic. (The lost-update `merge_logs` pattern previously listed here was
-  removed with the file-ingestion loop in item 4; entries now arrive per-event
-  and there is no read-modify-write.)
-
-- **`src/logs/query_logs.rs`** — `QueryLogs` has no per-IP cap, so a single noisy
-  source is bounded only by the 10-minute expiry. `bancuh-dns` caps at
-  `MAX_PER_IP = 1000` (`bancuh-dns/src/query_log.rs:11`). Commit `bece86a`
-  ("reduce logs and ip stats memory") suggests this has been hit once, though
-  current RSS (40–73 MB of 992 MB) shows no present pressure.
-
-- **`src/handler.rs:84`** — `render_template(...).unwrap()` panics inside a
-  request handler. The template is `include_str!`-ed and static so the risk is
-  low, but a panic here is avoidable. The registry is also rebuilt and the
-  template re-parsed on every request (`:74`); a `LazyLock` registry would do.
-  Escaping is fine — `{{ }}` escapes, so no XSS.
-
-- **`src/handler.rs:45`** — `ip.replace("::ffff:", "")` strips the IPv4-mapped
-  IPv6 prefix by substring replacement. It is guarded by `starts_with` and a
-  canonical `Display` cannot contain the prefix twice, so this is cosmetic
-  rather than a bug. `strip_prefix` is the correct operation; the sibling
-  `bancuh-dns` repo does it that way (`src/admin.rs:29`). `to_canonical()` is
-  cleaner still.
-
-- **`src/handler.rs:55`, `:68`** — every `/logs` request logs at info. Minor, but
-  the sibling repo has just had to cut per-query logging because container log
-  retention had dropped to ten minutes; the same pressure applies here.
-
-- **`src/logs/query_logs.rs:41-46`** — `get_logs_for_ip` trips
-  `clippy::manual_unwrap_or_default`, the only clippy warning in the tree once
-  the toolchain builds again. Clippy's own suggestion:
-  `self.logs_store.lock().unwrap().get(ip).cloned().unwrap_or_default()`.
-  Left alone on the bump branch as out of scope for a version bump.
-
-- **`serde_yaml` is deprecated upstream.** The newest release is published as
-  `0.9.34+deprecated` and the crate is archived, so it will receive no further
-  fixes, security included. It parses dnstap output in
-  `src/logs/query_log.rs`, on the ingestion path. `serde_yaml_ng` and
-  `serde_norway` are drop-in successors. Left alone deliberately: swapping YAML
-  parsers touches log ingestion and deserves its own change.
-
-- **`src/main.rs:27`** — typo in the doc comment: "custom l istener port".
-
-- **Operational, not in this repo: jp-dns2 receives almost no traffic.** jp-dns1
-  served 213,603 queries in the measurement window; jp-dns2 served 691, a 300:1
-  split. sg is 6.5:1. jp-dns2 answers correctly over both UDP and TCP, so the
-  node is healthy — it simply is not being asked. If jp-dns1 fails, the standby
-  is one nothing is configured to use. Worth investigating in
-  `adblock-dns-server`.
-
-- **README drift** — says the image is "only available for Docker architecture
-  linux-x86_64" and that Raspberry Pi support is future work, but CI already
-  builds `linux/amd64,linux/arm64,linux/386,linux/arm/v7`. `Dockerfile:46`'s
-  `EXPOSE` also omits 443 and 853, the DoH/DoT ports.
-
----
-
-## Verifying changes
-
-**`tests/e2e/run.sh`** is the end-to-end ACME suite, run against a local
-[Pebble](https://github.com/letsencrypt/pebble). Sixteen assertions covering
-first issuance, restart with a warm cache, re-issuance, and the console/cert
-reload path — each certificate check reading what
-certificate **dnsdist actually serves on :853**, not the file on disk. Those are
-different claims and only the second matters to a client. Takes about 90
-seconds.
-
-It is the only check that catches a broken challenge route. The axum
-path-parameter syntax (`{token}` on 0.8, `:token` on 0.7) compiles either way
-with no warning and fails only at runtime; getting it wrong means the
-certificate never issues, dnsdist never starts, and the node is fully down. That
-bug was introduced and caught twice during this work.
-
-`cargo build --release`, `cargo test` and `cargo clippy` all work since the
-toolchain bump. Note the clippy package on Alpine is `rust-clippy`, not
-`clippy`, and `apk add` is atomic — a wrong package name aborts the whole
-install and leaves you without cargo:
-
-```sh
-docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
-  'apk add --quiet rust cargo build-base cmake perl rust-clippy; cargo test --release'
-```
-
-What also works:
-
-- **`docker build .`** — passes, and catches base image and dependency problems.
-- **dnsdist config syntax**, against any version, without deploying:
-  ```sh
-  docker run --rm -v "$PWD/dnsdist.conf:/w/dnsdist.conf:ro" -w /w alpine:3.23 sh -c \
-    'apk add dnsdist >/dev/null 2>&1;
-     PORT=53 BACKEND=127.0.0.1:1153 TLS_ENABLED=true \
-     dnsdist --check-config --config dnsdist.conf'
-  ```
-- **Reading live state** from a node:
-  ```sh
-  scripts/console.sh jp-dns1 'showRules()'
-  ```
-  The key is generated per process start, so there is no constant to paste; the
-  script reads it back from the running dnsdist. Do not use `-k <key>` — dnsdist
-  2.0 rejects it, and the console client exits 0 either way, so a failure looks
-  like success.
-  `showRules()` gives per-rule match counts, `showServers()` totals and latency,
-  `topClients(n)` the heaviest sources. Capture a baseline *before* changing a
-  rule; you cannot get it afterwards.
-
-For anything touching ACME, use Pebble (`tests/e2e/`) rather than Let's
-Encrypt. Failed validations against production count against a per-domain weekly
-rate limit on a live service, and there is no way to undo one.
-
-Do not deploy to the production nodes without the owner's say-so. They are
-listed in `adblock-dns-server/scripts/deploy.sh`, and that script deploys to
-**all seven at once**; a canary is a `git pull && ./start.sh` on a single host,
-or better, pinning one node to a branch tag (see "Deployment path" above).
-
-**Node-specific cautions:**
-
-- **sg-dns2 serves the maintainer's own laptop.** Do not disrupt it.
-- **jp-dns2 is the safe canary for anything image-level** — it is healthy but
-  carries almost no traffic. For the same reason it is *useless* for validating
-  rate-limit changes; use jp-dns1 for those.
