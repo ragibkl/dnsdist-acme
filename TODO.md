@@ -89,25 +89,9 @@ Triaged 2026-09-05. Nothing here is urgent; the fleet is healthy and uniform.
 
 ### Worth doing next
 
-- **`src/logs/query_logs.rs` has no per-IP cap.** A single noisy source is
-  bounded only by the 10-minute expiry. `bancuh-dns` caps at `MAX_PER_IP = 1000`
-  (`bancuh-dns/src/query_log.rs:11`). Commit `bece86a` ("reduce logs and ip
-  stats memory") suggests this has been hit at least once. Current RSS (40-73 MB
-  of 992 MB) shows no present pressure, so this is insurance, not a fire.
-
-- **`serde_yaml` is a dead dependency.** It is declared in `Cargo.toml:24` and
-  used **nowhere in `src/`** -- the YAML ingestion path it served was deleted
-  with the dnstap rewrite. Earlier revisions of this file called it a risky swap
-  because it "parses dnstap output on the ingestion path"; that is no longer
-  true. It is now a one-line deletion, which also retires an archived,
-  unmaintained crate (`0.9.34+deprecated`). Verify with `grep -rn serde_yaml src/`
-  before removing.
-
-- **`src/handler.rs:84`** -- `render_template(...).unwrap()` panics inside a
-  request handler. The template is `include_str!`-ed and static so the risk is
-  low, but a panic here is avoidable. The registry is also rebuilt and the
-  template re-parsed on every request (`:74`); a `LazyLock` registry would fix
-  both. Escaping is fine -- `{{ }}` escapes, so no XSS.
+Nothing outstanding. The three items filed here -- the per-IP log cap, the dead
+`serde_yaml` dependency, and the `handler.rs` panic -- shipped in PR #9 and are
+recorded as item 6 under Done.
 
 ### Needs a decision, not just work
 
@@ -158,12 +142,22 @@ designed, confirmed by the maintainer 2026-09-05.
 ## Verifying changes
 
 **`tests/e2e/run.sh`** is the end-to-end ACME suite, run against a local
-[Pebble](https://github.com/letsencrypt/pebble). Sixteen assertions covering
-first issuance, restart with a warm cache, re-issuance, and the console/cert
-reload path — each certificate check reading the certificate **dnsdist actually
-serves on :853**, not the file on disk. Those are
-different claims and only the second matters to a client. Takes about 90
-seconds.
+[Pebble](https://github.com/letsencrypt/pebble). Twenty-one assertions covering
+first issuance, restart with a warm cache, re-issuance, the console/cert
+reload path, and `/logs` end to end — each certificate check reading the
+certificate **dnsdist actually serves on :853**, not the file on disk. Those are
+different claims and only the second matters to a client. Takes about two
+minutes.
+
+Step 5 covers the one chain nothing else touches: a real DNS query through
+dnsdist, then asserting it comes back from `/api/logs` and in the rendered page
+— dnsdist → dnstap socket → `QueryLogs` → handler → template. It also pins the
+per-IP scoping, using a second container as a negative control. That control
+holds the prober container **alive** on purpose: Docker's IPAM hands a freed
+address straight back out, so a prober run with `--rm` lets the next container
+land on the same IP, and the check then compares a client to itself and reports
+a leak that is not there. The two addresses are asserted to differ before any
+conclusion is drawn.
 
 It is the only check that catches a broken challenge route. The axum
 path-parameter syntax (`{token}` on 0.8, `:token` on 0.7) compiles either way
@@ -595,3 +589,61 @@ repo but left `Dockerfile:33` running `mkdir -p certs html/.well-known`, so
 every image kept shipping it. Invisible in the diff; visible only inside a
 container built from the branch. Worth remembering: for anything about what is
 *in* the image, check the image.
+
+### 6. Per-IP log cap, dead dependency, and the /logs panic
+
+Three items in one PR (#9), merged as `d3b9115` and rolled out to all seven.
+`:latest` came out byte-identical to the canaried `pr-9` image (amd64 digest
+`4c02820e91d2`), so the fleet runs exactly what was soaked for ten hours on
+jp-dns2.
+
+**Per-IP cap.** `QueryLogs` was a `HashMap<String, Vec<QueryLog>>` bounded only
+by the ten-minute expiry, which is barely a bound. Now a `VecDeque` capped at
+`MAX_PER_IP = 1000`, matching `bancuh-dns/src/query_log.rs`, evicting
+oldest-first so what survives is the recent history the page exists to show.
+
+The evictions are **counted**, not silent, and reported once a minute when
+non-zero. That decision paid for itself within two minutes of rollout: jp-dns1
+logged **971 dropped entries in its first minute and 2,045 in the second**. Its
+top client runs ~14 qps, so before this change that one address alone held
+roughly 8,400 entries. Nothing else in the system would have told us that.
+
+**Consequence worth knowing.** jp-dns1's top three clients are 79% of its
+traffic and all sit above the cap, so `/logs` now shows them **one to two
+minutes** of history instead of ten. At 14 qps these are forwarders or CGNAT
+egresses rather than people browsing, so this is judged acceptable -- but it is
+a real behaviour change, and raising `MAX_PER_IP` is the dial if it turns out to
+matter. sg-dns1, whose heaviest client is 13.9% at a much lower rate, logged
+zero drops.
+
+**`serde_yaml` deleted.** Used nowhere in `src/`; the YAML ingestion path went
+with the dnstap rewrite. One line from `Cargo.toml`, fifty from `Cargo.lock`,
+and `unsafe-libyaml` with it.
+
+**`handler.rs` no longer panics in a request handler.** `render_template` ran on
+a fresh `Handlebars::new()` per request -- re-parsing the template every hit --
+and unwrapped the result. It now renders from a `LazyLock` registry parsed once
+and answers 500 on failure, rather than taking down a process that also runs
+ACME renewal and the dnstap listener.
+
+**What this turned up.** Nothing tested `/logs` end to end. Every link was unit
+tested; that they were wired together was not, and that page is the only part of
+this service a user ever sees. Hence e2e step 5, described under "Verifying
+changes".
+
+**Verified after rollout:** all seven on image ID `0062cbbf3f7f`, restarts=0,
+**zero** errors or `Unknown key` warnings, `DeployedCachedCert` on every node so
+no certificate was re-issued and no Let's Encrypt rate limit spent, RSS
+8.8-10.9 MB, and 49/49 checks green across UDP, TCP, DoT, DoH, adblock, `/logs`
+and the console.
+
+**Two deploy-mechanics notes, both about `start.sh` rather than this repo:**
+
+- `docker compose pull` picks up a new `bancuh-dns:2` whenever one exists, so
+  the dns container is recreated too and serves **unfiltered DNS for about a
+  minute** while blocklists reload. `deploy.sh` hits all seven at once, so that
+  window is fleet-wide and simultaneous. Seen during this canary; worth filing
+  in `adblock-dns-server`.
+- A canary pin via an untracked `docker-compose.override.yml` survives
+  `git pull`, so a later `deploy.sh` leaves that node on the PR tag. Remove the
+  override before rolling out, not after.
