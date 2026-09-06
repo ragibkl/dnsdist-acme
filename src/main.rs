@@ -242,6 +242,13 @@ async fn main() -> anyhow::Result<()> {
             }
             cloned_logs_store.remove_expired_logs();
             cloned_usage_stats.remove_old_active_ips();
+
+            // The per-IP cap discards entries. Say so once a minute rather than
+            // never -- silent loss is how the old logs.yaml race stayed hidden.
+            let dropped = cloned_logs_store.take_dropped();
+            if dropped > 0 {
+                tracing::info!("query logs: {dropped} entries dropped by the per-IP cap");
+            }
         }
     });
 

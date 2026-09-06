@@ -11,6 +11,7 @@
 #                             dnsdist's files stale on every restart
 #   3. re-issuance         -- a genuinely new certificate reaches dnsdist
 #   4. console reachable   -- the cert reload path works
+#   5. /logs end to end    -- dnstap socket -> QueryLogs -> handler -> template
 #
 # Step 4 exists because nothing else exercises the control socket. The reload is
 # gated on dnsdist already running, and every scenario above restarts the
@@ -38,6 +39,7 @@ ok()   { echo "  PASS  $1"; pass=$((pass+1)); }
 bad()  { echo "  FAIL  $1"; fail=$((fail+1)); }
 
 cleanup() {
+  docker rm -f "${PROJECT}-logs-probe" >/dev/null 2>&1
   if [ "$KEEP" != "--keep" ]; then
     $COMPOSE down -v --remove-orphans >/dev/null 2>&1
     rm -f "$OVERRIDE"
@@ -245,6 +247,83 @@ fi
 grep -rq "setKey('" ../../dnsdist.conf \
   && bad "dnsdist.conf still contains a literal key" \
   || ok "dnsdist.conf holds no literal key"
+
+echo
+echo "== 5. the /logs page, end to end =="
+# Nothing else covers the chain dnsdist -> dnstap socket -> QueryLogs ->
+# handler -> template. Each link is unit tested; that they are wired together is
+# not, and the page is the only thing a user of this service ever sees.
+#
+# /logs keys on the HTTP source address, so the DNS query and the fetch must
+# come from the same container. The prober is kept ALIVE for the rest of this
+# step rather than run with --rm: Docker's IPAM hands a freed address straight
+# back out, so a second container started after the prober exits can land on the
+# very same IP -- at which point the scoping check below compares a client to
+# itself and reports a leak that is not there. Holding the address is what makes
+# the two clients genuinely distinct, and the assertion on that is what stops
+# this from silently degrading again.
+probe_ctr="${PROJECT}-logs-probe"
+docker rm -f "$probe_ctr" >/dev/null 2>&1
+docker run -d --name "$probe_ctr" --network "${PROJECT}_default" alpine:3.23 \
+  sh -c 'apk add --no-cache bind-tools curl >/dev/null 2>&1; sleep 300' >/dev/null 2>&1
+
+for _ in $(seq 1 30); do
+  docker exec "$probe_ctr" sh -c 'command -v dig >/dev/null && command -v curl >/dev/null' 2>/dev/null && break
+  sleep 2
+done
+
+probe=$(docker exec "$probe_ctr" sh -c '
+  dig +tries=1 +timeout=3 @dnsdist.test -p 5353 e2e-probe.example.com A >/dev/null 2>&1
+  # dnstap delivery is asynchronous; the socket write happens as the answer is
+  # sent, so a moment is enough and a poll would only hide a real stall.
+  sleep 3
+  echo "===API==="
+  curl -s --max-time 5 http://dnsdist.test:8080/api/logs
+  echo
+  echo "===HTML==="
+  curl -s --max-time 5 http://dnsdist.test:8080/logs
+' 2>/dev/null)
+
+probe_api=$(echo "$probe" | sed -n '/===API===/,/===HTML===/p')
+probe_html=$(echo "$probe" | sed -n '/===HTML===/,$p')
+
+echo "$probe_api" | grep -q "e2e-probe.example.com" \
+  && ok "/api/logs reports the query the prober just made" \
+  || bad "/api/logs did not show the probe query: $(echo "$probe_api" | tail -1 | cut -c1-200)"
+
+echo "$probe_html" | grep -q "e2e-probe.example.com" \
+  && ok "/logs renders that query into the page" \
+  || bad "/logs page did not contain the probe query"
+
+# The template is rendered from a registry built once at first use. A page that
+# came back empty, or as an axum 500, would contain neither of these.
+echo "$probe_html" | grep -q "active ips" \
+  && ok "/logs rendered the full template, not an error page" \
+  || bad "/logs did not render the template"
+
+# The scoping the page depends on: a different source address must see none of
+# it. This is deliberate behaviour (see TODO.md, "Decided and accepted"), so it
+# is pinned rather than left to be rediscovered as a finding.
+other=$(docker run --rm --network "${PROJECT}_default" alpine:3.23 sh -c '
+  apk add --no-cache curl >/dev/null 2>&1
+  curl -s --max-time 5 http://dnsdist.test:8080/api/logs' 2>/dev/null)
+
+# Both responses report the address the server saw, so the premise of the
+# negative control is checked rather than assumed.
+probe_ip=$(echo "$probe_api" | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4)
+other_ip=$(echo "$other"     | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+if [ -n "$probe_ip" ] && [ -n "$other_ip" ] && [ "$probe_ip" != "$other_ip" ]; then
+  ok "the two clients are distinct addresses ($probe_ip vs $other_ip)"
+  echo "$other" | grep -q "e2e-probe.example.com" \
+    && bad "/api/logs leaked another address's queries" \
+    || ok "/api/logs scopes queries to the requesting address"
+else
+  bad "negative control invalid -- both clients look like one address ('$probe_ip' / '$other_ip')"
+  echo "  not reporting on scoping when the two clients share a source address"
+fi
+
+docker rm -f "$probe_ctr" >/dev/null 2>&1
 
 echo
 echo "== result: $pass passed, $fail failed =="
