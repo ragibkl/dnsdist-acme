@@ -598,23 +598,12 @@ Three items in one PR (#9), merged as `d3b9115` and rolled out to all seven.
 jp-dns2.
 
 **Per-IP cap.** `QueryLogs` was a `HashMap<String, Vec<QueryLog>>` bounded only
-by the ten-minute expiry, which is barely a bound. Now a `VecDeque` capped at
-`MAX_PER_IP = 1000`, matching `bancuh-dns/src/query_log.rs`, evicting
+by the ten-minute expiry. Now a `VecDeque` with a `MAX_PER_IP` ceiling, evicting
 oldest-first so what survives is the recent history the page exists to show.
 
 The evictions are **counted**, not silent, and reported once a minute when
-non-zero. That decision paid for itself within two minutes of rollout: jp-dns1
-logged **971 dropped entries in its first minute and 2,045 in the second**. Its
-top client runs ~14 qps, so before this change that one address alone held
-roughly 8,400 entries. Nothing else in the system would have told us that.
-
-**Consequence worth knowing.** jp-dns1's top three clients are 79% of its
-traffic and all sit above the cap, so `/logs` now shows them **one to two
-minutes** of history instead of ten. At 14 qps these are forwarders or CGNAT
-egresses rather than people browsing, so this is judged acceptable -- but it is
-a real behaviour change, and raising `MAX_PER_IP` is the dial if it turns out to
-matter. sg-dns1, whose heaviest client is 13.9% at a much lower rate, logged
-zero drops.
+non-zero. That decision paid for itself immediately, and then corrected the
+change itself -- see item 7.
 
 **`serde_yaml` deleted.** Used nowhere in `src/`; the YAML ingestion path went
 with the dnstap rewrite. One line from `Cargo.toml`, fifty from `Cargo.lock`,
@@ -647,3 +636,40 @@ and the console.
 - A canary pin via an untracked `docker-compose.override.yml` survives
   `git pull`, so a later `deploy.sh` leaves that node on the PR tag. Remove the
   override before rolling out, not after.
+
+### 7. MAX_PER_IP raised 1,000 -> 10,000
+
+Shipped straight to master; a one-constant change whose only interesting
+property was measurable on jp-dns1, so canarying on the idle node would have
+proved nothing.
+
+Item 6 set the cap to 1,000 to match `bancuh-dns/src/query_log.rs`. A day of
+production said that was the wrong number **for this service**, and the counter
+added in item 6 is the only reason that was visible at all:
+
+| node | total load | RSS | discarded |
+|---|---|---|---|
+| jp-dns1 | ~38 qps | 14.5 MB | **~2,100 entries/min** |
+| sg-dns1 | ~12 qps | 13.8 MB | ~180 entries/min |
+
+At ~226 bytes an entry (measured), ten minutes of jp-dns1's *entire* load is
+about **5 MB**, against 992 MB of RAM. The ten-minute expiry was already the
+real bound on aggregate memory, so the cap was doing routine trimming rather
+than acting as a backstop -- discarding most of the busiest node's log volume
+for a saving that was never needed.
+
+At 10,000 it binds only above **~16.7 qps sustained by one address**, which is
+past anything the fleet sees from a single source (jp-dns1's heaviest client
+averages ~12 qps). It is now insurance against a pathological source, and
+ordinary clients keep the full ten minutes the page advertises.
+
+Bounded on both sides: `MaxQPSIPRule` holds any single address to 50 qps, so one
+IP can offer at most ~30,000 entries in a window, of which this keeps 10,000 --
+about 2.2 MB.
+
+**The divergence from `bancuh-dns`'s 1,000 is deliberate** and is written into
+the constant's doc comment, so it does not read as drift and get "fixed" back.
+
+The general lesson is worth more than the constant: a silent cap would have
+looked correct forever. Counting what you discard is what turned a guess into a
+measurement, one day later.

@@ -13,19 +13,34 @@ use super::QueryLog;
 /// How long an entry is kept, and so how much history `/logs` shows.
 const MAX_AGE_MINUTES: i64 = 10;
 
-/// Ceiling on the entries held for any one address, matching
-/// `bancuh-dns/src/query_log.rs`.
+/// Ceiling on the entries held for any one address.
 ///
-/// Without it a single source is bounded only by the expiry above, and the
-/// expiry is not much of a bound: jp-dns1's heaviest client averages about
-/// 9 queries a second, which is roughly 5,600 entries inside a ten-minute
-/// window, and nothing limits how many such sources there are at once.
+/// Deliberately **not** `bancuh-dns`'s `MAX_PER_IP = 1000`. This started at
+/// 1000 to match it, and a day on production showed that was the wrong number
+/// here: jp-dns1 discarded a steady ~2,100 entries a minute out of ~38 qps of
+/// total traffic, so the cap was doing the routine trimming that the ten-minute
+/// expiry already does, rather than acting as a backstop.
+///
+/// The expiry is the real bound on aggregate memory: at ~226 bytes an entry,
+/// ten minutes of jp-dns1's entire load is about 5 MB, against 992 MB of RAM
+/// and a measured 14 MB RSS. There was never memory pressure to trade history
+/// for.
+///
+/// At 10,000 the cap binds only above ~16.7 qps *sustained by one address*,
+/// which is past anything the fleet currently sees from a single source --
+/// jp-dns1's heaviest client averages about 12 qps. So it is now insurance
+/// against a pathological source rather than a routine trimmer, and ordinary
+/// clients keep the full ten minutes the page advertises.
+///
+/// Worst case is bounded on both sides: `MaxQPSIPRule` in `dnsdist.conf` holds
+/// any single address to 50 qps, so one IP can offer at most ~30,000 entries in
+/// a window, of which this keeps 10,000 -- about 2.2 MB.
 ///
 /// The eviction is counted rather than silent. Losing entries without saying so
 /// is a failure this code has already had once -- the `logs.yaml` read/truncate
 /// race destroyed data with nothing recording it, and only a second, noisier
-/// symptom revealed it.
-const MAX_PER_IP: usize = 1000;
+/// symptom revealed it. That counter is also what measured the paragraph above.
+const MAX_PER_IP: usize = 10_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct QueryLogs {
