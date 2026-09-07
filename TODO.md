@@ -85,50 +85,71 @@ Useful consequences:
 
 ## Open items
 
-Triaged 2026-09-05. Nothing here is urgent; the fleet is healthy and uniform.
+**None.** Everything filed in the original review is either shipped (see Done)
+or explicitly decided below. Triaged to empty 2026-09-07.
 
-### Worth doing next
-
-Nothing outstanding. The three items filed here -- the per-IP log cap, the dead
-`serde_yaml` dependency, and the `handler.rs` panic -- shipped in PR #9 and are
-recorded as item 6 under Done.
-
-### Needs a decision, not just work
-
-- **Remove the dnsdist console entirely (options B / B+).** Item 2 shipped
-  option A -- a key generated per process start -- which closed the actual
-  vulnerability. B deletes the console and restarts dnsdist to pick up a
-  renewed certificate; B+ overlaps the restart via `reusePort` so no query is
-  dropped. Both cost `showServers()`, `topClients()` and `showRules()`, which
-  are the tools used to measure every change in this file. Measured restart
-  downtime for plain B: 353 ms, 374 ms, 42 ms across three runs, roughly six
-  times a year per node. **Recommendation: leave it.** A already removed the
-  published secret; B/B+ trade real diagnostics for a console that is now
-  key-guarded and loopback-only. Full analysis in item 2 under Done.
-
-- **`src/handler.rs:55`, `:68`** -- every `/logs` request logs at info. Minor
-  here, but the sibling repo has already had to cut per-query logging because
-  container log retention had fallen to ten minutes. Same pressure applies.
-
-### Not this repo
-
-- **jp-dns2 receives almost no traffic.** jp-dns1 served 213,603 queries in the
-  measurement window; jp-dns2 served 691, a 300:1 split. sg is 6.5:1. jp-dns2
-  answers correctly over UDP, DoT and DoH, so the node is healthy -- it simply
-  is not being asked. If jp-dns1 fails, the standby is one nothing is configured
-  to use. Worth investigating in `adblock-dns-server`.
+The one loose thread is not in this repo: `start.sh` runs `docker compose pull`,
+which recreates the `bancuh-dns` container whenever a new `:2` image exists, and
+it serves **unfiltered DNS for about a minute** while blocklists reload.
+`deploy.sh` hits all seven nodes at once, so that window is fleet-wide and
+simultaneous. Worth filing in `adblock-dns-server`.
 
 ## Decided and accepted
 
-Recorded so they are not re-filed as findings. Both are the product working as
-designed, confirmed by the maintainer 2026-09-05.
+Recorded so they are not re-filed as findings. These are the product working as
+designed, confirmed by the maintainer 2026-09-05 and 2026-09-07.
 
 - **`/logs` shows query history to anyone sharing your public IP.**
-  `src/handler.rs:57` and `:70` key purely on the source IP of the HTTP request,
-  so behind NAT or CGNAT -- where a carrier may put thousands of subscribers on
-  one address -- any of them can read the others' query history. Port 8080 is
-  plain HTTP, so it is cleartext on the wire too. **Intentional.** It is what
-  makes the page useful without accounts.
+  `src/handler.rs` keys purely on the source IP of the HTTP request, so behind
+  NAT or CGNAT -- where a carrier may put thousands of subscribers on one
+  address -- any of them can read the others' query history. Port 8080 is plain
+  HTTP, so it is cleartext on the wire too. **Intentional.** It is what makes
+  the page useful without accounts.
+
+  **The page has a purpose and a user.** It was built for Tomatoide to debug
+  resolution issues. The **ten-minute window is the privacy limit** that makes
+  the exposure above tolerable -- it is deliberately *not* a memory or capacity
+  setting, and `MAX_AGE_MINUTES` in `src/logs/query_logs.rs` now says so. Do not
+  raise it for performance or convenience reasons, and do not let a per-IP cap
+  bite hard enough to silently give ordinary clients less than ten minutes:
+  that undercuts the debugging purpose the page exists for. See item 7.
+
+- **The dnsdist console stays (options B / B+ dropped).** B would delete the
+  console and restart dnsdist to pick up a renewed certificate; B+ would overlap
+  that restart via `reusePort` so no query is dropped. **Neither is worth it.**
+  Item 2 shipped option A -- a key generated per process start, loopback-only --
+  which closed the actual vulnerability, and `reloadAllCertificates()` has since
+  been verified working on every production node and through e2e step 4. A
+  reload that clean is not worth trading for the loss of `showServers()`,
+  `topClients()` and `showRules()`, which are the tools that measured every
+  change in this file -- including the per-IP cap mistuning in item 7. Confirmed
+  by the maintainer 2026-09-07. Full analysis remains in item 2 under Done;
+  nothing about A blocks revisiting this later.
+
+- **jp-dns2's traffic imbalance is accepted.** jp-dns1 served 213,603 queries in
+  the original measurement window against jp-dns2's 691, a 300:1 split where sg
+  is 6.5:1. jp-dns2 answers correctly over UDP, TCP, DoT and DoH, so the node is
+  healthy -- it simply is not being asked. **No action.** Confirmed by the
+  maintainer 2026-09-07. It also makes jp-dns2 the fleet's safe canary, which is
+  a real benefit: it is the node used to soak every image-level change.
+
+- **Per-request `/logs` info logging stays.** Every `/logs` and `/api/logs`
+  request logs one line at info. Filed originally on the theory that the sibling
+  repo's log-retention pressure applied here too. **Measured 2026-09-07 across
+  three nodes over three hours, and it does not:**
+
+  | node | total lines | `get_logs` | share | on disk |
+  |---|---|---|---|---|
+  | jp-dns1 | 307 | 195 | 63% | 76 KB |
+  | sg-dns1 | 240 | 193 | 80% | 64 KB |
+  | us-dns1 | 274 | 192 | 70% | 72 KB |
+
+  The share is high but the volume is negligible: ~600 KB/day against a 100 MB
+  budget (`max-size: 1m` x `max-file: 100`), roughly **160 days of retention**.
+  Every request in that window came from **one address** polling all seven nodes
+  about once a minute. At that rate the line is closer to useful liveness
+  evidence than noise. Demoting both lines to `debug!` is a two-line change if
+  it ever matters; it does not currently.
 
 - **`dnsdist.conf:14`** -- `setACL({ '0.0.0.0/0', '::/0' })` makes this an open
   resolver, usable for amplification on UDP/53. **Intentional**: it is a public

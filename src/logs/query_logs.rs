@@ -11,6 +11,19 @@ use chrono::{Duration, Utc};
 use super::QueryLog;
 
 /// How long an entry is kept, and so how much history `/logs` shows.
+///
+/// **This is a privacy limit, not a memory one. Do not raise it.** `/logs`
+/// shows query history to anyone sharing the requester's public IP, which
+/// behind CGNAT can be thousands of unrelated subscribers -- that exposure is
+/// accepted (it is what makes the page useful without accounts) precisely
+/// *because* the window is this short. Ten minutes is long enough to debug a
+/// resolution problem while it is happening and short enough that the page is
+/// not a browsing history.
+///
+/// Memory is not the constraint here and never was: at ~226 bytes an entry, ten
+/// minutes of the busiest node's entire load is about 5 MB of 992 MB. Anyone
+/// tempted to tune this for capacity reasons is solving a problem that does not
+/// exist, and would be trading away the reason the exposure above is tolerable.
 const MAX_AGE_MINUTES: i64 = 10;
 
 /// Ceiling on the entries held for any one address.
@@ -31,6 +44,11 @@ const MAX_AGE_MINUTES: i64 = 10;
 /// jp-dns1's heaviest client averages about 12 qps. So it is now insurance
 /// against a pathological source rather than a routine trimmer, and ordinary
 /// clients keep the full ten minutes the page advertises.
+///
+/// That last part is the point, not a side effect: the page exists so a real
+/// person can debug a resolution problem against `MAX_AGE_MINUTES` of history.
+/// A cap low enough to bite ordinary clients silently hands them less history
+/// than the page promises, which is the failure this constant is set to avoid.
 ///
 /// Worst case is bounded on both sides: `MaxQPSIPRule` in `dnsdist.conf` holds
 /// any single address to 50 qps, so one IP can offer at most ~30,000 entries in
