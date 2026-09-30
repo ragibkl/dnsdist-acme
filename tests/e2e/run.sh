@@ -51,7 +51,7 @@ trap cleanup EXIT
 # the file on disk -- "the file changed" and "dnsdist serves the new cert" are
 # different claims, and only the second one matters to a client.
 served_cert_fingerprint() {
-  docker run --rm --network "${PROJECT}_default" alpine:3.23 sh -c '
+  docker run --rm --network "${PROJECT}_default" alpine:3.24 sh -c '
     apk add --no-cache openssl >/dev/null 2>&1
     openssl s_client -connect dnsdist.test:853 -servername dnsdist.test </dev/null 2>/dev/null \
       | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2'
@@ -61,7 +61,7 @@ served_cert_fingerprint() {
 # lives in the SAN and NOT in the subject CN. Asserting on the subject silently
 # checks nothing.
 served_cert_identity() {
-  docker run --rm --network "${PROJECT}_default" alpine:3.23 sh -c '
+  docker run --rm --network "${PROJECT}_default" alpine:3.24 sh -c '
     apk add --no-cache openssl >/dev/null 2>&1
     openssl s_client -connect dnsdist.test:853 -servername dnsdist.test </dev/null 2>/dev/null \
       | openssl x509 -noout -ext subjectAltName -issuer 2>/dev/null | tr "\n" " "'
@@ -264,7 +264,7 @@ echo "== 5. the /logs page, end to end =="
 # this from silently degrading again.
 probe_ctr="${PROJECT}-logs-probe"
 docker rm -f "$probe_ctr" >/dev/null 2>&1
-docker run -d --name "$probe_ctr" --network "${PROJECT}_default" alpine:3.23 \
+docker run -d --name "$probe_ctr" --network "${PROJECT}_default" alpine:3.24 \
   sh -c 'apk add --no-cache bind-tools curl >/dev/null 2>&1; sleep 300' >/dev/null 2>&1
 
 for _ in $(seq 1 30); do
@@ -304,7 +304,7 @@ echo "$probe_html" | grep -q "active ips" \
 # The scoping the page depends on: a different source address must see none of
 # it. This is deliberate behaviour (see TODO.md, "Decided and accepted"), so it
 # is pinned rather than left to be rediscovered as a finding.
-other=$(docker run --rm --network "${PROJECT}_default" alpine:3.23 sh -c '
+other=$(docker run --rm --network "${PROJECT}_default" alpine:3.24 sh -c '
   apk add --no-cache curl >/dev/null 2>&1
   curl -s --max-time 5 http://dnsdist.test:8080/api/logs' 2>/dev/null)
 

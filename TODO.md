@@ -192,7 +192,7 @@ toolchain bump. Note the clippy package on Alpine is `rust-clippy`, not
 install and leaves you without cargo:
 
 ```sh
-docker run --rm -v "$PWD:/w" -w /w alpine:3.23 sh -c \
+docker run --rm -v "$PWD:/w" -w /w alpine:3.24 sh -c \
   'apk add --quiet rust cargo build-base cmake perl rust-clippy; cargo test --release'
 ```
 
@@ -201,7 +201,7 @@ What also works:
 - **`docker build .`** — passes, and catches base image and dependency problems.
 - **dnsdist config syntax**, against any version, without deploying:
   ```sh
-  docker run --rm -v "$PWD/dnsdist.conf:/w/dnsdist.conf:ro" -w /w alpine:3.23 sh -c \
+  docker run --rm -v "$PWD/dnsdist.conf:/w/dnsdist.conf:ro" -w /w alpine:3.24 sh -c \
     'apk add dnsdist >/dev/null 2>&1;
      PORT=53 BACKEND=127.0.0.1:1153 TLS_ENABLED=true \
      dnsdist --check-config --config dnsdist.conf'
