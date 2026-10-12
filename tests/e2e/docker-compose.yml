@@ -23,6 +23,9 @@ services:
       BACKEND: "1.1.1.1:53"
       TLS_ENABLED: "true"
       TLS_DOMAIN: "dnsdist.test"
+      # Production uses these for v4-only and v6-only names that pin the logs
+      # page's address family. Here they only need to resolve to the container.
+      TLS_EXTRA_DOMAINS: "v4.dnsdist.test,v6.dnsdist.test"
       TLS_EMAIL: "test@example.com"
       ACME_URL: "https://pebble:14000/dir"
       ACME_INSECURE: "true"
@@ -34,7 +37,7 @@ services:
       default:
         # Pebble resolves the challenge target through Docker's DNS, so the
         # domain being issued for has to be a name on this network.
-        aliases: ["dnsdist.test"]
+        aliases: ["dnsdist.test", "v4.dnsdist.test", "v6.dnsdist.test"]
     depends_on: [pebble]
 
 volumes:

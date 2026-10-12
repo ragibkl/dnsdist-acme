@@ -232,7 +232,7 @@ impl Acme {
 
 #[allow(clippy::too_many_arguments)]
 pub fn setup_acme(
-    domain: String,
+    domains: Vec<String>,
     email: String,
     acme_url: Option<String>,
     acme_insecure: bool,
@@ -267,9 +267,9 @@ pub fn setup_acme(
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoVerifier))
         .with_no_client_auth();
-        AcmeConfig::new_with_client_config([domain], Arc::new(client_config))
+        AcmeConfig::new_with_client_config(domains, Arc::new(client_config))
     } else {
-        AcmeConfig::new([domain])
+        AcmeConfig::new(domains)
     };
 
     let mut config = base
