@@ -129,6 +129,18 @@ echo "$identity" | grep -q "DNS:dnsdist.test" \
   && ok "dnsdist serves a certificate for dnsdist.test on :853" \
   || bad "unexpected certificate on :853 -- $identity"
 
+echo "$identity" | grep -q "DNS:v4.dnsdist.test" && echo "$identity" | grep -q "DNS:v6.dnsdist.test" \
+  && ok "the same certificate covers TLS_EXTRA_DOMAINS" \
+  || bad "TLS_EXTRA_DOMAINS missing from the certificate -- $identity"
+
+# The extra names exist for the HTTPS logs page, so check that is where they work.
+logs_v4=$(docker run --rm --network "${PROJECT}_default" alpine:3.24 sh -c '
+  apk add --no-cache curl >/dev/null 2>&1
+  curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://v4.dnsdist.test:8443/logs')
+[ "$logs_v4" = "200" ] \
+  && ok "https://v4.dnsdist.test:8443/logs answers 200" \
+  || bad "https://v4.dnsdist.test:8443/logs answered '$logs_v4'"
+
 echo "$identity" | grep -qi "pebble" \
   && ok "certificate was issued by Pebble" \
   || bad "issuer is not Pebble -- $identity"

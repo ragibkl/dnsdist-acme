@@ -46,6 +46,18 @@ struct Args {
     #[arg(long, env, value_name = "TLS_DOMAIN")]
     tls_domain: Option<String>,
 
+    /// Extra hostnames for the same certificate, comma separated. Meant for
+    /// names with only an A or only an AAAA record, so a link to the logs page
+    /// can pin the address family and still use HTTPS.
+    ///
+    /// Each name must pass HTTP-01 like the main one, over the family its
+    /// records point to. One that stops passing fails renewal for the whole
+    /// certificate, DoT and DoH included. Changing the list also means the
+    /// cached certificate no longer matches, so the next start waits for a new
+    /// one before dnsdist starts.
+    #[arg(long, env, value_name = "TLS_EXTRA_DOMAINS", value_delimiter = ',')]
+    tls_extra_domains: Vec<String>,
+
     /// Custom ACME directory URL. Defaults to Let's Encrypt production; the
     /// end-to-end test points this at a local Pebble instance.
     #[arg(long, env, value_name = "ACME_URL")]
@@ -135,9 +147,17 @@ async fn main() -> anyhow::Result<()> {
         let domain = args.tls_domain.expect("tls_domain is not set");
         let email = args.tls_email.expect("tls_email is not set");
 
-        tracing::info!("Setting up ACME for {domain}");
+        let mut domains = vec![domain];
+        domains.extend(
+            args.tls_extra_domains
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty()),
+        );
+
+        tracing::info!("Setting up ACME for {}", domains.join(", "));
         let mut acme = setup_acme(
-            domain,
+            domains,
             email,
             args.acme_url,
             args.acme_insecure,

@@ -87,6 +87,21 @@ Logs pages:
 - <http://dns.yourdomain.com:8080/logs>
 - <https://dns.yourdomain.com:8443/logs> # only with tls enabled
 
+The page only lists queries from the address your browser connects from, so a
+browser that picks IPv6 while your DNS goes over IPv4 sees nothing. To give
+each address family its own HTTPS link, add names with only an A record and
+only an AAAA record, and put them on the same certificate:
+
+```yaml
+- TLS_EXTRA_DOMAINS=v4.dns.yourdomain.com,v6.dns.yourdomain.com
+```
+
+Then <https://v4.dns.yourdomain.com:8443/logs> is always reached over IPv4, and
+the v6 name over IPv6. Every name must pass HTTP-01 on port 80 over its own
+family, and one that stops passing fails renewal for the whole certificate,
+DoT and DoH included. Changing the list needs a new certificate, so the next
+start waits for it before dnsdist serves anything.
+
 ## Using it with other DNS projects
 
 This dns project should be used in conjuction with another DNS service.
