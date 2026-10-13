@@ -13,7 +13,8 @@ use handler::AppState;
 use logs::{QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, StatusCode};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer};
 
 use crate::handler::{get_logs, get_logs_api};
@@ -58,6 +59,15 @@ struct Args {
     #[arg(long, env, value_name = "TLS_EXTRA_DOMAINS", value_delimiter = ',')]
     tls_extra_domains: Vec<String>,
 
+    /// Web origins allowed to read `/api/logs` from a browser, comma separated,
+    /// e.g. `https://dns.example.com`. Empty by default: no other site can read
+    /// the logs.
+    ///
+    /// Never `*`. The API answers with the caller's own lookups, so any site
+    /// allowed here can read the DNS history of everyone who visits it.
+    #[arg(long, env, value_name = "LOGS_CORS_ORIGINS", value_delimiter = ',')]
+    logs_cors_origins: Vec<String>,
+
     /// Custom ACME directory URL. Defaults to Let's Encrypt production; the
     /// end-to-end test points this at a local Pebble instance.
     #[arg(long, env, value_name = "ACME_URL")]
@@ -85,15 +95,54 @@ struct Args {
     acme_cache_dir: String,
 }
 
+/// Settings for the two web servers that do not change after startup.
+#[derive(Clone)]
+struct WebConfig {
+    /// Reported in `/api/logs` and on the page.
+    server: Option<String>,
+    /// Applied to `/api/logs` only. `None` sends no CORS headers at all.
+    cors: Option<CorsLayer>,
+}
+
+/// Builds the CORS layer from `LOGS_CORS_ORIGINS`, refusing anything that is
+/// not an exact `http(s)://` origin -- `*` above all, see the flag's doc.
+fn logs_cors(origins: &[String]) -> anyhow::Result<Option<CorsLayer>> {
+    let origins: Vec<&str> = origins.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+    if origins.is_empty() {
+        return Ok(None);
+    }
+
+    let mut values = Vec::with_capacity(origins.len());
+    for origin in origins {
+        let exact = origin.starts_with("https://") || origin.starts_with("http://");
+        if !exact || origin.contains('*') || origin.ends_with('/') {
+            anyhow::bail!("LOGS_CORS_ORIGINS: {origin:?} is not an exact origin like https://dns.example.com");
+        }
+        values.push(HeaderValue::from_str(origin)?);
+    }
+
+    Ok(Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(values))
+            .allow_methods([Method::GET]),
+    ))
+}
+
 fn make_service(
     logs_store: QueryLogs,
     usage_stats: UsageStats,
+    web: WebConfig,
 ) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
-    let app_state = AppState::new(logs_store, usage_stats);
+    let app_state = AppState::new(logs_store, usage_stats, web.server);
+
+    let mut api = get(get_logs_api);
+    if let Some(cors) = web.cors {
+        api = api.layer(cors);
+    }
 
     let app = Router::new()
         .route("/logs", get(get_logs))
-        .route("/api/logs", get(get_logs_api))
+        .route("/api/logs", api)
         .with_state(app_state)
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(1)))
         .layer(ResponseBodyTimeoutLayer::new(Duration::from_secs(1)))
@@ -139,6 +188,11 @@ async fn main() -> anyhow::Result<()> {
 
     let logs_store = QueryLogs::default();
     let usage_stats = UsageStats::default();
+
+    let web = WebConfig {
+        server: args.tls_domain.clone(),
+        cors: logs_cors(&args.logs_cors_origins)?,
+    };
 
     // Set once dnsdist is up, so a renewal knows there is something to reload.
     let mut dnsdist_running: Option<Arc<AtomicBool>> = None;
@@ -191,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         let cloned_token = token.clone();
         let cloned_logs_store = logs_store.clone();
         let cloned_usage_stats = usage_stats.clone();
+        let cloned_web = web.clone();
         tracker.spawn(async move {
             let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8443));
             let handle = Handle::new();
@@ -201,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("https server received cancel signal");
                     handle.shutdown();
                 },
-                _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats)) => {
+                _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats, cloned_web)) => {
                     tracing::info!("https server ended prematurely");
                     cloned_token.cancel();
                 },
@@ -213,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
     let cloned_token = token.clone();
     let cloned_logs_store = logs_store.clone();
     let cloned_usage_stats = usage_stats.clone();
+    let cloned_web = web.clone();
     tracker.spawn(async move {
         let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8080));
         let handle = Handle::new();
@@ -223,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("http server received cancel signal");
                 handle.shutdown();
             },
-            _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats)) => {
+            _ = server.serve(make_service(cloned_logs_store, cloned_usage_stats, cloned_web)) => {
                 tracing::info!("http server ended prematurely");
                 cloned_token.cancel();
             },
@@ -332,4 +388,39 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Exiting");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn origins(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_origins_means_no_cors_layer() {
+        assert!(logs_cors(&[]).unwrap().is_none());
+        assert!(logs_cors(&origins(&["", " "])).unwrap().is_none());
+    }
+
+    #[test]
+    fn exact_origins_are_accepted() {
+        let list = origins(&["https://bancuh.com", " https://dns.example.com"]);
+        assert!(logs_cors(&list).unwrap().is_some());
+    }
+
+    /// The one setting that would hand every visitor's DNS history to any
+    /// website, so it is refused outright rather than documented against.
+    #[test]
+    fn a_wildcard_is_refused() {
+        assert!(logs_cors(&origins(&["*"])).is_err());
+        assert!(logs_cors(&origins(&["https://*.example.com"])).is_err());
+    }
+
+    #[test]
+    fn things_that_are_not_origins_are_refused() {
+        assert!(logs_cors(&origins(&["bancuh.com"])).is_err());
+        assert!(logs_cors(&origins(&["https://bancuh.com/"])).is_err());
+    }
 }

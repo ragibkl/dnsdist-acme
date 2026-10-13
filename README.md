@@ -102,6 +102,46 @@ family, and one that stops passing fails renewal for the whole certificate,
 DoT and DoH included. Changing the list needs a new certificate, so the next
 start waits for it before dnsdist serves anything.
 
+### JSON API
+
+`/api/logs` returns the same lookups as JSON, newest first:
+
+```json
+{
+  "server": "dns.yourdomain.com",
+  "client_ip": "203.0.113.7",
+  "family": "ipv4",
+  "window_seconds": 600,
+  "cursor": 1791234567890123,
+  "truncated": false,
+  "queries": [
+    {
+      "seq": 1791234567890123,
+      "time": "2026-10-13T00:53:26Z",
+      "name": "ads.example.com",
+      "type": "A",
+      "rcode": "NOERROR",
+      "blocked": true,
+      "answers": [{ "name": "ads.example.com", "type": "A", "ttl": 60, "data": "0.0.0.0" }]
+    }
+  ]
+}
+```
+
+- `limit` caps the entries returned (default 200, at most 1000). `truncated` says there were more.
+- `since` returns only entries with a higher `seq`. Send the last answer's `cursor` to poll for new lookups.
+  Entries never change once stored, so a client appends what comes back and drops entries older than
+  `window_seconds` itself. `seq` keeps increasing across restarts.
+- `blocked` is true when every address in the answer is `0.0.0.0` or `::`.
+
+To read the API from a web page on another site, list that site's origin:
+
+```yaml
+- LOGS_CORS_ORIGINS=https://dns.yourdomain.com
+```
+
+Only exact origins are accepted, never `*`: the API returns the caller's own lookups, so any site on
+this list can read the DNS history of everyone who visits it.
 ## Using it with other DNS projects
 
 This dns project should be used in conjuction with another DNS service.
