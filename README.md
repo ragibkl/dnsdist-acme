@@ -102,7 +102,6 @@ family, and one that stops passing fails renewal for the whole certificate,
 DoT and DoH included. Changing the list needs a new certificate, so the next
 start waits for it before dnsdist serves anything.
 
-
 ### JSON API
 
 `/api/logs` returns the same lookups as JSON, newest first:
