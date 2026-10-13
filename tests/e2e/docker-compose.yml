@@ -26,6 +26,9 @@ services:
       # Production uses these for v4-only and v6-only names that pin the logs
       # page's address family. Here they only need to resolve to the container.
       TLS_EXTRA_DOMAINS: "v4.dnsdist.test,v6.dnsdist.test"
+      # The site allowed to read /api/logs from a browser. Checked against an
+      # origin that is not on the list as well.
+      LOGS_CORS_ORIGINS: "https://allowed.example"
       TLS_EMAIL: "test@example.com"
       ACME_URL: "https://pebble:14000/dir"
       ACME_INSECURE: "true"

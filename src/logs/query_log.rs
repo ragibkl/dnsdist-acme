@@ -1,15 +1,87 @@
 use chrono::{DateTime, TimeZone, Utc};
-use hickory_proto::op::Message;
+use hickory_proto::op::{Message, ResponseCode};
+use hickory_proto::rr::{RData, Record};
 use hickory_proto::serialize::binary::BinDecodable;
 
 use super::dnstap_proto::{TYPE_CLIENT_RESPONSE, parse_dnstap};
 
+/// One client lookup, as `/api/logs` returns it.
+///
+/// Every field is final once the entry is stored: nothing about a lookup changes
+/// after the fact, which is what lets a client poll with `since` and simply
+/// append. Expiry is the client's job, from `time`.
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct QueryLog {
+    /// The client address. It is the key the store files entries under and the
+    /// caller already knows it, so it is not repeated in every entry.
+    #[serde(skip)]
     pub ip: String,
+    /// Assigned by `QueryLogs::push`, increasing in arrival order. `since` is
+    /// compared against this rather than `time`, which has one-second
+    /// resolution and can tie.
+    pub seq: u64,
+    #[serde(rename = "time")]
     pub query_time: DateTime<Utc>,
-    pub question: String,
-    pub answers: Vec<String>,
+    /// The name looked up, without the trailing dot.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub qtype: String,
+    pub rcode: String,
+    pub blocked: bool,
+    pub answers: Vec<Answer>,
+}
+
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct Answer {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub rtype: String,
+    pub ttl: u32,
+    pub data: String,
+}
+
+/// The mnemonic as dig prints it. hickory's `Display` gives prose such as
+/// "Non-Existent Domain", which is not what anyone searches for.
+fn rcode_name(code: ResponseCode) -> String {
+    match u16::from(code) {
+        0 => "NOERROR".to_string(),
+        1 => "FORMERR".to_string(),
+        2 => "SERVFAIL".to_string(),
+        3 => "NXDOMAIN".to_string(),
+        4 => "NOTIMP".to_string(),
+        5 => "REFUSED".to_string(),
+        n => format!("RCODE{n}"),
+    }
+}
+
+fn trim_root(name: &str) -> String {
+    name.strip_suffix('.').filter(|n| !n.is_empty()).unwrap_or(name).to_string()
+}
+
+/// Whether bancuh-dns blocked the lookup. It answers a blocked name with
+/// 0.0.0.0 or ::, so the lookup is blocked when it has address answers and
+/// every one of them is unspecified. A CNAME on the way, as a rewrite gives,
+/// does not change that.
+fn is_blocked(answers: &[Record]) -> bool {
+    let mut any_address = false;
+    for record in answers {
+        match &record.data {
+            RData::A(a) => {
+                any_address = true;
+                if !a.0.is_unspecified() {
+                    return false;
+                }
+            }
+            RData::AAAA(aaaa) => {
+                any_address = true;
+                if !aaaa.0.is_unspecified() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    any_address
 }
 
 /// Builds a `QueryLog` from one dnstap frame.
@@ -33,13 +105,23 @@ pub fn query_log_from_frame(payload: &[u8]) -> Option<QueryLog> {
     let ip = frame.query_address?;
     let dns = Message::from_bytes(&frame.response_message).ok()?;
 
-    let question = dns
+    let (name, qtype) = dns
         .queries
         .first()
-        .map(|q| format!("{} {} {}", q.name(), q.query_class(), q.query_type()))
+        .map(|q| (trim_root(&q.name().to_string()), q.query_type().to_string()))
         .unwrap_or_default();
 
-    let answers = dns.answers.iter().map(|r| r.to_string()).collect();
+    let blocked = is_blocked(&dns.answers);
+    let answers = dns
+        .answers
+        .iter()
+        .map(|r| Answer {
+            name: trim_root(&r.name.to_string()),
+            rtype: r.record_type().to_string(),
+            ttl: r.ttl,
+            data: r.data.to_string(),
+        })
+        .collect();
 
     // dnstap reports whole seconds separately from nanoseconds; second
     // resolution is all the ten-minute log window needs.
@@ -50,8 +132,12 @@ pub fn query_log_from_frame(payload: &[u8]) -> Option<QueryLog> {
 
     Some(QueryLog {
         ip: ip.to_string(),
+        seq: 0,
         query_time,
-        question,
+        name,
+        qtype,
+        rcode: rcode_name(dns.metadata.response_code),
+        blocked,
         answers,
     })
 }
@@ -60,7 +146,7 @@ pub fn query_log_from_frame(payload: &[u8]) -> Option<QueryLog> {
 mod tests {
     use super::*;
     use hickory_proto::op::{Message, OpCode, Query};
-    use hickory_proto::rr::rdata::A;
+    use hickory_proto::rr::rdata::{A, AAAA};
     use hickory_proto::rr::{Name, RData, Record, RecordType};
     use hickory_proto::serialize::binary::BinEncodable;
     use std::str::FromStr;
@@ -119,10 +205,83 @@ mod tests {
 
         assert_eq!(log.ip, "10.0.0.7");
         assert_eq!(log.query_time.timestamp(), 1_788_000_000);
-        assert!(log.question.contains("zedo.com."), "got {}", log.question);
-        assert!(log.question.contains('A'), "got {}", log.question);
-        assert_eq!(log.answers.len(), 1);
-        assert!(log.answers[0].contains("0.0.0.0"), "got {}", log.answers[0]);
+        assert_eq!(log.name, "zedo.com");
+        assert_eq!(log.qtype, "A");
+        assert_eq!(log.rcode, "NOERROR");
+        assert!(log.blocked);
+        assert_eq!(
+            log.answers,
+            vec![Answer {
+                name: "zedo.com".to_string(),
+                rtype: "A".to_string(),
+                ttl: 5,
+                data: "0.0.0.0".to_string(),
+            }]
+        );
+    }
+
+    fn response_with(name: &str, answers: Vec<RData>, rcode: ResponseCode) -> Vec<u8> {
+        let name = Name::from_str(name).unwrap();
+        let mut msg = Message::response(0, OpCode::Query);
+        msg.metadata.response_code = rcode;
+        msg.queries.push(Query::query(name.clone(), RecordType::A));
+        for data in answers {
+            msg.answers.push(Record::from_rdata(name.clone(), 60, data));
+        }
+        msg.to_bytes().unwrap()
+    }
+
+    fn log_of(dns: Vec<u8>) -> QueryLog {
+        query_log_from_frame(&frame(TYPE_CLIENT_RESPONSE, &[10, 0, 0, 7], 1, &dns)).unwrap()
+    }
+
+    #[test]
+    fn a_real_address_is_not_blocked() {
+        let log = log_of(response_with(
+            "example.com.",
+            vec![RData::A(A::new(93, 184, 215, 14))],
+            ResponseCode::NoError,
+        ));
+        assert!(!log.blocked);
+        assert_eq!(log.answers[0].data, "93.184.215.14");
+    }
+
+    #[test]
+    fn an_unspecified_ipv6_answer_is_blocked() {
+        let log = log_of(response_with(
+            "zedo.com.",
+            vec![RData::AAAA(AAAA::new(0, 0, 0, 0, 0, 0, 0, 0))],
+            ResponseCode::NoError,
+        ));
+        assert!(log.blocked);
+    }
+
+    /// One real address among the answers means the name resolved.
+    #[test]
+    fn a_mix_of_unspecified_and_real_addresses_is_not_blocked() {
+        let log = log_of(response_with(
+            "example.com.",
+            vec![RData::A(A::new(0, 0, 0, 0)), RData::A(A::new(93, 184, 215, 14))],
+            ResponseCode::NoError,
+        ));
+        assert!(!log.blocked);
+    }
+
+    #[test]
+    fn rcodes_use_the_dig_mnemonics() {
+        let log = log_of(response_with("nope.example.", vec![], ResponseCode::NXDomain));
+        assert_eq!(log.rcode, "NXDOMAIN");
+        assert!(!log.blocked);
+    }
+
+    /// The internal key and the store's sequence number are not the parser's
+    /// business, and the address must not be serialized into every entry.
+    #[test]
+    fn the_client_address_is_not_serialized() {
+        let json = serde_json::to_string(&log_of(dns_response())).unwrap();
+        assert!(!json.contains("10.0.0.7"), "{json}");
+        assert!(json.contains("\"time\""), "{json}");
+        assert!(json.contains("\"type\":\"A\""), "{json}");
     }
 
     #[test]
@@ -140,8 +299,9 @@ mod tests {
         let f = frame(TYPE_CLIENT_RESPONSE, &[10, 0, 0, 7], 1, &msg.to_bytes().unwrap());
 
         let log = query_log_from_frame(&f).unwrap();
-        assert!(log.question.contains("blocked.example."));
+        assert_eq!(log.name, "blocked.example");
         assert!(log.answers.is_empty());
+        assert!(!log.blocked, "no answer is not the same as blocked");
     }
 
     #[test]

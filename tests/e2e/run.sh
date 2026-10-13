@@ -11,7 +11,8 @@
 #                             dnsdist's files stale on every restart
 #   3. re-issuance         -- a genuinely new certificate reaches dnsdist
 #   4. console reachable   -- the cert reload path works
-#   5. /logs end to end    -- dnstap socket -> QueryLogs -> handler -> template
+#   5. /logs end to end    -- dnstap socket -> QueryLogs -> handler -> template,
+#                             plus the API's since/limit contract and CORS
 #
 # Step 4 exists because nothing else exercises the control socket. The reload is
 # gated on dnsdist already running, and every scenario above restarts the
@@ -296,12 +297,16 @@ probe=$(docker exec "$probe_ctr" sh -c '
   curl -s --max-time 5 http://dnsdist.test:8080/logs
 ' 2>/dev/null)
 
-probe_api=$(echo "$probe" | sed -n '/===API===/,/===HTML===/p')
+probe_api=$(echo "$probe" | sed -n '/===API===/,/===HTML===/p' | sed -n 2p)
 probe_html=$(echo "$probe" | sed -n '/===HTML===/,$p')
 
-echo "$probe_api" | grep -q "e2e-probe.example.com" \
+echo "$probe_api" | grep -q '"name":"e2e-probe.example.com"' \
   && ok "/api/logs reports the query the prober just made" \
-  || bad "/api/logs did not show the probe query: $(echo "$probe_api" | tail -1 | cut -c1-200)"
+  || bad "/api/logs did not show the probe query: $(echo "$probe_api" | cut -c1-200)"
+
+echo "$probe_api" | grep -q '"type":"A"' && echo "$probe_api" | grep -q '"rcode":"' \
+  && ok "/api/logs entries carry the record type and rcode" \
+  || bad "/api/logs entries lack type/rcode: $(echo "$probe_api" | cut -c1-200)"
 
 echo "$probe_html" | grep -q "e2e-probe.example.com" \
   && ok "/logs renders that query into the page" \
@@ -309,9 +314,59 @@ echo "$probe_html" | grep -q "e2e-probe.example.com" \
 
 # The template is rendered from a registry built once at first use. A page that
 # came back empty, or as an axum 500, would contain neither of these.
-echo "$probe_html" | grep -q "active ips" \
+echo "$probe_html" | grep -q "active addresses" \
   && ok "/logs rendered the full template, not an error page" \
   || bad "/logs did not render the template"
+
+# The polling contract the bancuh.com page relies on: the cursor from one
+# answer, sent back as since, returns nothing until there is something new, and
+# then exactly the new lookup.
+cursor=$(echo "$probe_api" | grep -o '"cursor":[0-9]*' | cut -d: -f2)
+poll=$(docker exec "$probe_ctr" sh -c "
+  curl -s --max-time 5 'http://dnsdist.test:8080/api/logs?since=$cursor'
+  echo
+  dig +tries=1 +timeout=3 @dnsdist.test -p 5353 e2e-second.example.com A >/dev/null 2>&1
+  sleep 3
+  curl -s --max-time 5 'http://dnsdist.test:8080/api/logs?since=$cursor'
+  echo
+  curl -s --max-time 5 'http://dnsdist.test:8080/api/logs?limit=1'
+" 2>/dev/null)
+quiet=$(echo "$poll" | sed -n 1p)
+after=$(echo "$poll" | sed -n 2p)
+limited=$(echo "$poll" | sed -n 3p)
+
+[ -n "$cursor" ] && echo "$quiet" | grep -q '"queries":\[\]' \
+  && ok "since=<cursor> returns nothing when nothing is new" \
+  || bad "since=<cursor> was not empty (cursor '$cursor'): $(echo "$quiet" | cut -c1-200)"
+
+echo "$after" | grep -q '"name":"e2e-second.example.com"' && ! echo "$after" | grep -q '"name":"e2e-probe.example.com"' \
+  && ok "since=<cursor> returns the new lookup and not the old one" \
+  || bad "since=<cursor> after a new lookup: $(echo "$after" | cut -c1-300)"
+
+[ "$(echo "$limited" | grep -o '"seq":' | wc -l)" -eq 1 ] && echo "$limited" | grep -q '"truncated":true' \
+  && ok "limit=1 returns one entry and reports truncation" \
+  || bad "limit=1: $(echo "$limited" | cut -c1-300)"
+
+# CORS: only the configured origin may read the API from a browser. The
+# negative case matters more than the positive one -- a header sent to any
+# origin would let every website read its visitors' lookups.
+cors=$(docker exec "$probe_ctr" sh -c "
+  curl -s -D - -o /dev/null --max-time 5 -H 'Origin: https://allowed.example' http://dnsdist.test:8080/api/logs | tr -d '\r' | grep -i '^access-control-allow-origin'
+  echo ---
+  curl -s -D - -o /dev/null --max-time 5 -H 'Origin: https://evil.example' http://dnsdist.test:8080/api/logs | tr -d '\r' | grep -i '^access-control-allow-origin'
+  echo ---
+  curl -s -D - -o /dev/null --max-time 5 -H 'Origin: https://allowed.example' http://dnsdist.test:8080/logs | tr -d '\r' | grep -i '^access-control-allow-origin'
+" 2>/dev/null)
+allowed=$(echo "$cors" | sed -n 1p)
+others=$(echo "$cors" | sed -n '/^---$/,$p' | grep -vc '^---$')
+
+echo "$allowed" | grep -qi 'https://allowed.example' \
+  && ok "/api/logs allows the configured origin" \
+  || bad "/api/logs did not allow https://allowed.example: '$allowed'"
+
+[ "$others" -eq 0 ] \
+  && ok "no CORS header for another origin, or on the HTML page" \
+  || bad "CORS header leaked: $cors"
 
 # The scoping the page depends on: a different source address must see none of
 # it. This is deliberate behaviour (see TODO.md, "Decided and accepted"), so it
@@ -322,8 +377,8 @@ other=$(docker run --rm --network "${PROJECT}_default" alpine:3.24 sh -c '
 
 # Both responses report the address the server saw, so the premise of the
 # negative control is checked rather than assumed.
-probe_ip=$(echo "$probe_api" | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4)
-other_ip=$(echo "$other"     | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4)
+probe_ip=$(echo "$probe_api" | grep -o '"client_ip":"[^"]*"' | head -1 | cut -d'"' -f4)
+other_ip=$(echo "$other"     | grep -o '"client_ip":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 if [ -n "$probe_ip" ] && [ -n "$other_ip" ] && [ "$probe_ip" != "$other_ip" ]; then
   ok "the two clients are distinct addresses ($probe_ip vs $other_ip)"

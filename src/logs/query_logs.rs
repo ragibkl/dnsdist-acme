@@ -26,6 +26,9 @@ use super::QueryLog;
 /// exist, and would be trading away the reason the exposure above is tolerable.
 const MAX_AGE_MINUTES: i64 = 10;
 
+/// `MAX_AGE_MINUTES` for API clients, which expire entries themselves.
+pub const WINDOW_SECONDS: i64 = MAX_AGE_MINUTES * 60;
+
 /// Ceiling on the entries held for any one address.
 ///
 /// Deliberately **not** `bancuh-dns`'s `MAX_PER_IP = 1000`. This started at
@@ -60,11 +63,40 @@ const MAX_AGE_MINUTES: i64 = 10;
 /// symptom revealed it. That counter is also what measured the paragraph above.
 const MAX_PER_IP: usize = 10_000;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct QueryLogs {
     logs_store: Arc<Mutex<HashMap<String, VecDeque<QueryLog>>>>,
     /// Entries discarded by `MAX_PER_IP` since the count was last taken.
     dropped: Arc<AtomicU64>,
+    /// The last `seq` handed out.
+    ///
+    /// Starts at the process start time in microseconds rather than zero, so a
+    /// restart never hands out a number a client already has as its `since`.
+    /// From zero, a client polling across a restart would see nothing until the
+    /// new count overtook its old one. Overtaking the clock would take more
+    /// than a million lookups a second, sustained.
+    seq: Arc<AtomicU64>,
+}
+
+impl Default for QueryLogs {
+    fn default() -> Self {
+        let start = Utc::now().timestamp_micros().max(0) as u64;
+        Self {
+            logs_store: Arc::default(),
+            dropped: Arc::default(),
+            seq: Arc::new(AtomicU64::new(start)),
+        }
+    }
+}
+
+/// What `QueryLogs::get` returns for one address.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogsPage {
+    /// Newest first.
+    pub queries: Vec<QueryLog>,
+    /// More entries newer than `since` exist than `limit` let through. The
+    /// oldest of them were left out.
+    pub truncated: bool,
 }
 
 impl QueryLogs {
@@ -86,8 +118,11 @@ impl QueryLogs {
     /// Entries arrive in the order dnsdist emits them, so the front of the
     /// queue is the oldest and dropping from there keeps the most recent
     /// history -- which is the part a caller of `/logs` is looking for.
-    pub fn push(&self, log: QueryLog) {
+    pub fn push(&self, mut log: QueryLog) {
         let mut guard = self.logs_store.lock().unwrap();
+        // Taken under the lock, so the order of `seq` within an address's
+        // queue is the order of the queue.
+        log.seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let entries = guard.entry(log.ip.clone()).or_default();
 
         while entries.len() >= MAX_PER_IP {
@@ -98,13 +133,22 @@ impl QueryLogs {
         entries.push_back(log);
     }
 
-    pub fn get_logs_for_ip(&self, ip: &str) -> Vec<QueryLog> {
-        self.logs_store
-            .lock()
-            .unwrap()
-            .get(ip)
-            .map(|entries| entries.iter().cloned().collect())
-            .unwrap_or_default()
+    /// The newest entries for `ip` with a `seq` above `since`, at most `limit`.
+    ///
+    /// Walks from the newest end and stops at `since` or `limit`, so only the
+    /// entries returned are cloned, not the whole queue -- this runs under the
+    /// lock that every incoming dnstap frame also takes.
+    pub fn get(&self, ip: &str, since: u64, limit: usize) -> LogsPage {
+        let guard = self.logs_store.lock().unwrap();
+        let Some(entries) = guard.get(ip) else {
+            return LogsPage { queries: Vec::new(), truncated: false };
+        };
+
+        let mut newer = entries.iter().rev().take_while(|q| q.seq > since);
+        let queries: Vec<QueryLog> = newer.by_ref().take(limit).cloned().collect();
+        let truncated = newer.next().is_some();
+
+        LogsPage { queries, truncated }
     }
 
     /// How many entries the cap has discarded since this was last called, and
@@ -123,15 +167,23 @@ mod tests {
     fn log_at(ip: &str, secs: i64) -> QueryLog {
         QueryLog {
             ip: ip.to_string(),
+            seq: 0,
             query_time: DateTime::from_timestamp(secs, 0).unwrap(),
-            question: format!("q{secs}.example. IN A"),
-            answers: vec!["0.0.0.0".to_string()],
+            name: format!("q{secs}.example"),
+            qtype: "A".to_string(),
+            rcode: "NOERROR".to_string(),
+            blocked: true,
+            answers: vec![],
         }
     }
 
     fn recent(ip: &str, n: usize) -> Vec<QueryLog> {
         let now = Utc::now().timestamp();
         (0..n).map(|i| log_at(ip, now + i as i64)).collect()
+    }
+
+    fn all(logs: &QueryLogs, ip: &str) -> Vec<QueryLog> {
+        logs.get(ip, 0, usize::MAX).queries
     }
 
     #[test]
@@ -141,7 +193,7 @@ mod tests {
             logs.push(log);
         }
 
-        assert_eq!(logs.get_logs_for_ip("10.0.0.7").len(), 10);
+        assert_eq!(all(&logs, "10.0.0.7").len(), 10);
         assert_eq!(logs.take_dropped(), 0);
     }
 
@@ -152,17 +204,18 @@ mod tests {
         let logs = QueryLogs::default();
         let over = 50;
         let pushed = recent("10.0.0.7", MAX_PER_IP + over);
-        let newest = pushed.last().unwrap().question.clone();
+        let newest = pushed.last().unwrap().name.clone();
         // The first `over` entries are the ones that should go.
-        let oldest_kept = pushed[over].question.clone();
+        let oldest_kept = pushed[over].name.clone();
         for log in pushed {
             logs.push(log);
         }
 
-        let kept = logs.get_logs_for_ip("10.0.0.7");
+        // Newest first.
+        let kept = all(&logs, "10.0.0.7");
         assert_eq!(kept.len(), MAX_PER_IP);
-        assert_eq!(kept.last().unwrap().question, newest);
-        assert_eq!(kept.first().unwrap().question, oldest_kept);
+        assert_eq!(kept.first().unwrap().name, newest);
+        assert_eq!(kept.last().unwrap().name, oldest_kept);
     }
 
     #[test]
@@ -188,8 +241,8 @@ mod tests {
             logs.push(log);
         }
 
-        assert_eq!(logs.get_logs_for_ip("10.0.0.7").len(), MAX_PER_IP);
-        assert_eq!(logs.get_logs_for_ip("10.0.0.8").len(), 3);
+        assert_eq!(all(&logs, "10.0.0.7").len(), MAX_PER_IP);
+        assert_eq!(all(&logs, "10.0.0.8").len(), 3);
     }
 
     #[test]
@@ -200,8 +253,72 @@ mod tests {
 
         logs.remove_expired_logs();
 
-        assert!(logs.get_logs_for_ip("10.0.0.7").is_empty());
-        assert_eq!(logs.get_logs_for_ip("10.0.0.8").len(), 1);
+        assert!(all(&logs, "10.0.0.7").is_empty());
+        assert_eq!(all(&logs, "10.0.0.8").len(), 1);
         assert_eq!(logs.logs_store.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn get_returns_newest_first_with_increasing_seq() {
+        let logs = QueryLogs::default();
+        for log in recent("10.0.0.7", 3) {
+            logs.push(log);
+        }
+
+        let page = logs.get("10.0.0.7", 0, 10);
+        let seqs: Vec<u64> = page.queries.iter().map(|q| q.seq).collect();
+        assert_eq!(seqs.len(), 3);
+        assert!(seqs[0] > seqs[1] && seqs[1] > seqs[2], "{seqs:?}");
+        assert!(!page.truncated);
+    }
+
+    /// The polling contract: `since` is the highest seq the client has, and it
+    /// gets exactly the entries after it.
+    #[test]
+    fn since_returns_only_newer_entries() {
+        let logs = QueryLogs::default();
+        for log in recent("10.0.0.7", 3) {
+            logs.push(log);
+        }
+        let cursor = logs.get("10.0.0.7", 0, 10).queries[0].seq;
+
+        assert!(logs.get("10.0.0.7", cursor, 10).queries.is_empty());
+
+        for log in recent("10.0.0.7", 2) {
+            logs.push(log);
+        }
+        let page = logs.get("10.0.0.7", cursor, 10);
+        assert_eq!(page.queries.len(), 2);
+        assert!(page.queries.iter().all(|q| q.seq > cursor));
+    }
+
+    #[test]
+    fn limit_keeps_the_newest_and_reports_truncation() {
+        let logs = QueryLogs::default();
+        for log in recent("10.0.0.7", 5) {
+            logs.push(log);
+        }
+        let everything = all(&logs, "10.0.0.7");
+
+        let page = logs.get("10.0.0.7", 0, 2);
+        assert_eq!(page.queries, everything[..2].to_vec());
+        assert!(page.truncated);
+
+        let page = logs.get("10.0.0.7", 0, 5);
+        assert!(!page.truncated, "exactly `limit` left is not truncation");
+    }
+
+    /// A restarted process must not reuse numbers an old client holds.
+    #[test]
+    fn a_new_store_starts_above_an_older_one() {
+        let old = QueryLogs::default();
+        old.push(recent("10.0.0.7", 1).pop().unwrap());
+        let old_seq = all(&old, "10.0.0.7")[0].seq;
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let new = QueryLogs::default();
+        new.push(recent("10.0.0.7", 1).pop().unwrap());
+
+        assert!(all(&new, "10.0.0.7")[0].seq > old_seq);
     }
 }

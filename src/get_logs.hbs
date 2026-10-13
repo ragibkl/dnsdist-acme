@@ -1,44 +1,167 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-  <title>{{title}}</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DNS query logs{{#if server}} · {{server}}{{/if}}</title>
   <style>
-    table, th, td {
-      border: 1px solid black;
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #1a1a1a;
+      --muted: #666666;
+      --line: #e3e3e3;
+      --blocked-bg: #fde8e8;
+      --blocked-fg: #a11a1a;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181c;
+        --fg: #e8e8e8;
+        --muted: #9a9a9a;
+        --line: #2c2f35;
+        --blocked-bg: #4a1d1d;
+        --blocked-fg: #ffb4b4;
+      }
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      background: var(--bg);
+      color: var(--fg);
+      font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    h1 {
+      font-size: 1.25rem;
+      margin: 0 0 4px;
+    }
+
+    .meta {
+      color: var(--muted);
+      margin: 0 0 16px;
+    }
+
+    .meta strong {
+      color: var(--fg);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
       border-collapse: collapse;
+      width: 100%;
     }
 
     th, td {
-      padding: 10px;
+      text-align: left;
+      vertical-align: top;
+      padding: 6px 10px 6px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    td.time, td.type {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    td.name {
+      word-break: break-all;
+    }
+
+    code {
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .blocked {
+      background: var(--blocked-bg);
+      color: var(--blocked-fg);
+    }
+
+    .rcode {
+      color: var(--muted);
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 24px 0;
     }
   </style>
 </head>
 
 <body>
-  <p>ip address: {{ip}}</p>
-  <p>active ips (10 minutes): {{ active_ips }}</p>
+  <h1>DNS query logs</h1>
+  <p class="meta">
+    {{#if server}}<strong>{{server}}</strong> · {{/if}}your address
+    <strong>{{client_ip}}</strong> ({{family}}) · last {{window_minutes}} minutes ·
+    {{active_ips}} active addresses
+  </p>
 
-  <table>
-    <tr>
-      <th>Timestamp</th>
-      <th>Query</th>
-      <th>Answers</th>
-    </tr>
-    {{#each queries}}
-    <tr>
-      <td>{{this.query_time}}</td>
-      <td>{{this.question}}</td>
-      <td>
-        <ul>
-          {{#each this.answers}}
-          <li>{{this}}</li>
-          {{/each}}
-        </ul>
-      </td>
-    </tr>
-    {{/each}}
-  </table>
+  {{#if queries}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each queries}}
+        <tr>
+          <td class="time"><code>{{this.time}}</code></td>
+          <td class="name"><code>{{this.name}}</code></td>
+          <td class="type"><code>{{this.type}}</code></td>
+          <td>
+            {{#if this.blocked}}<span class="badge blocked">Blocked</span>{{/if}}
+            {{#unless this.answers}}<span class="rcode">{{this.rcode}}</span>{{/unless}}
+            {{#unless this.blocked}}
+            <ul>
+              {{#each this.answers}}
+              <li><code>{{this.type}} {{this.data}}</code></li>
+              {{/each}}
+            </ul>
+            {{/unless}}
+          </td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+  </div>
+  {{#if truncated}}<p class="meta">Showing the newest {{shown}} only.</p>{{/if}}
+  {{else}}
+  <p class="empty">
+    No lookups from {{client_ip}} in the last {{window_minutes}} minutes. If you just
+    set this server up, check that your device sends DNS to it over {{family}}.
+  </p>
+  {{/if}}
 </body>
 
 </html>
