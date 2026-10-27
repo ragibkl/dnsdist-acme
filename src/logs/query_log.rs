@@ -3,7 +3,7 @@ use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::{RData, Record};
 use hickory_proto::serialize::binary::BinDecodable;
 
-use super::dnstap_proto::{TYPE_CLIENT_RESPONSE, parse_dnstap};
+use super::dnstap_proto::{parse_dnstap, TYPE_CLIENT_RESPONSE};
 
 /// One client lookup, as `/api/logs` returns it.
 ///
@@ -55,7 +55,10 @@ fn rcode_name(code: ResponseCode) -> String {
 }
 
 fn trim_root(name: &str) -> String {
-    name.strip_suffix('.').filter(|n| !n.is_empty()).unwrap_or(name).to_string()
+    name.strip_suffix('.')
+        .filter(|n| !n.is_empty())
+        .unwrap_or(name)
+        .to_string()
 }
 
 /// Whether bancuh-dns blocked the lookup. It answers a blocked name with
@@ -200,7 +203,12 @@ mod tests {
 
     #[test]
     fn builds_a_log_entry_from_a_client_response() {
-        let f = frame(TYPE_CLIENT_RESPONSE, &[10, 0, 0, 7], 1_788_000_000, &dns_response());
+        let f = frame(
+            TYPE_CLIENT_RESPONSE,
+            &[10, 0, 0, 7],
+            1_788_000_000,
+            &dns_response(),
+        );
         let log = query_log_from_frame(&f).unwrap();
 
         assert_eq!(log.ip, "10.0.0.7");
@@ -261,7 +269,10 @@ mod tests {
     fn a_mix_of_unspecified_and_real_addresses_is_not_blocked() {
         let log = log_of(response_with(
             "example.com.",
-            vec![RData::A(A::new(0, 0, 0, 0)), RData::A(A::new(93, 184, 215, 14))],
+            vec![
+                RData::A(A::new(0, 0, 0, 0)),
+                RData::A(A::new(93, 184, 215, 14)),
+            ],
             ResponseCode::NoError,
         ));
         assert!(!log.blocked);
@@ -269,7 +280,11 @@ mod tests {
 
     #[test]
     fn rcodes_use_the_dig_mnemonics() {
-        let log = log_of(response_with("nope.example.", vec![], ResponseCode::NXDomain));
+        let log = log_of(response_with(
+            "nope.example.",
+            vec![],
+            ResponseCode::NXDomain,
+        ));
         assert_eq!(log.rcode, "NXDOMAIN");
         assert!(!log.blocked);
     }
@@ -296,7 +311,12 @@ mod tests {
         let name = Name::from_str("blocked.example.").unwrap();
         let mut msg = Message::response(0, OpCode::Query);
         msg.queries.push(Query::query(name, RecordType::A));
-        let f = frame(TYPE_CLIENT_RESPONSE, &[10, 0, 0, 7], 1, &msg.to_bytes().unwrap());
+        let f = frame(
+            TYPE_CLIENT_RESPONSE,
+            &[10, 0, 0, 7],
+            1,
+            &msg.to_bytes().unwrap(),
+        );
 
         let log = query_log_from_frame(&f).unwrap();
         assert_eq!(log.name, "blocked.example");
@@ -306,7 +326,12 @@ mod tests {
 
     #[test]
     fn rejects_a_frame_whose_dns_payload_is_garbage() {
-        let f = frame(TYPE_CLIENT_RESPONSE, &[10, 0, 0, 7], 1, b"not a dns message");
+        let f = frame(
+            TYPE_CLIENT_RESPONSE,
+            &[10, 0, 0, 7],
+            1,
+            b"not a dns message",
+        );
         assert!(query_log_from_frame(&f).is_none());
     }
 

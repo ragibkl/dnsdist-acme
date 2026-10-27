@@ -141,7 +141,10 @@ impl QueryLogs {
     pub fn get(&self, ip: &str, since: u64, limit: usize) -> LogsPage {
         let guard = self.logs_store.lock().unwrap();
         let Some(entries) = guard.get(ip) else {
-            return LogsPage { queries: Vec::new(), truncated: false };
+            return LogsPage {
+                queries: Vec::new(),
+                truncated: false,
+            };
         };
 
         let mut newer = entries.iter().rev().take_while(|q| q.seq > since);

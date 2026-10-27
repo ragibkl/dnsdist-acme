@@ -1,0 +1,22 @@
+name: Security advisories
+
+# A new RustSec advisory can hit a crate we already depend on without any
+# change here, so check Cargo.lock against the advisory database every day too.
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

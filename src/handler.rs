@@ -202,7 +202,8 @@ mod tests {
     /// that no longer exists, fails here.
     #[test]
     fn the_logs_template_renders() {
-        let data = page_data(vec![QueryLog {
+        let data = page_data(
+            vec![QueryLog {
                 ip: "203.0.113.7".to_string(),
                 seq: 1,
                 query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
@@ -216,7 +217,9 @@ mod tests {
                     ttl: 60,
                     data: "0.0.0.0".to_string(),
                 }],
-            }], 42);
+            }],
+            42,
+        );
 
         let html = REGISTRY.render(GET_LOGS_TEMPLATE_NAME, &data).unwrap();
 
@@ -246,7 +249,9 @@ mod tests {
                 data: "93.184.215.14".to_string(),
             }],
         });
-        let html = REGISTRY.render(GET_LOGS_TEMPLATE_NAME, &page_data(q, 1)).unwrap();
+        let html = REGISTRY
+            .render(GET_LOGS_TEMPLATE_NAME, &page_data(q, 1))
+            .unwrap();
 
         assert!(html.contains("A 93.184.215.14"), "{html}");
         assert!(!html.contains(">Blocked<"), "{html}");
@@ -275,7 +280,9 @@ mod tests {
 
     #[test]
     fn an_empty_log_says_so() {
-        let html = REGISTRY.render(GET_LOGS_TEMPLATE_NAME, &page_data(vec![], 1)).unwrap();
+        let html = REGISTRY
+            .render(GET_LOGS_TEMPLATE_NAME, &page_data(vec![], 1))
+            .unwrap();
         assert!(html.contains("No lookups from 203.0.113.7"), "{html}");
     }
 
@@ -284,7 +291,8 @@ mod tests {
     /// `{{{ }}}` would silently make it injectable.
     #[test]
     fn query_names_are_html_escaped() {
-        let data = page_data(vec![QueryLog {
+        let data = page_data(
+            vec![QueryLog {
                 ip: "203.0.113.7".to_string(),
                 seq: 1,
                 query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
@@ -298,7 +306,9 @@ mod tests {
                     ttl: 60,
                     data: "0.0.0.0".to_string(),
                 }],
-            }], 1);
+            }],
+            1,
+        );
 
         let html = REGISTRY.render(GET_LOGS_TEMPLATE_NAME, &data).unwrap();
 
@@ -340,7 +350,10 @@ mod tests {
     fn an_ipv6_address_merely_containing_the_prefix_is_not_rewritten() {
         let addr = "[1:2:3:4::ffff:5]:443";
         let got = ip_of(addr);
-        assert!(got.contains(':'), "should still be an IPv6 address, got {got}");
+        assert!(
+            got.contains(':'),
+            "should still be an IPv6 address, got {got}"
+        );
         assert_eq!(got, "1:2:3:4::ffff:5");
     }
 }

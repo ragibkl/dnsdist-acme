@@ -1,20 +1,20 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::Router;
 use futures::StreamExt;
-use rustls::DigitallySignedStruct;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::DigitallySignedStruct;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{AccountCache, AcmeConfig, CertCache, ResolvesServerCertAcme, UseChallenge};
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use super::dnsdist::{ConsoleKey, run_dnsdist_reload_cert};
+use super::dnsdist::{run_dnsdist_reload_cert, ConsoleKey};
 
 /// Skips verification of the ACME *server's* certificate. Only for pointing at
 /// a local Pebble instance in tests, which signs with an ephemeral CA that is
@@ -86,7 +86,10 @@ fn split_pem(pem: &[u8]) -> anyhow::Result<(String, String)> {
     }
 
     if blocks.len() < 2 {
-        anyhow::bail!("expected a private key and at least one certificate, got {} PEM block(s)", blocks.len());
+        anyhow::bail!(
+            "expected a private key and at least one certificate, got {} PEM block(s)",
+            blocks.len()
+        );
     }
 
     let key = blocks.remove(0);
@@ -144,7 +147,10 @@ impl DnsdistCertCache {
             tracing::error!("acme: cannot write {}: {err}", chain_path.display());
             return;
         }
-        tracing::info!("acme: wrote {origin} certificate to {}", self.certs_dir.display());
+        tracing::info!(
+            "acme: wrote {origin} certificate to {}",
+            self.certs_dir.display()
+        );
 
         let _ = self.ready_tx.send(true);
 
@@ -207,7 +213,9 @@ impl AccountCache for DnsdistCertCache {
         directory_url: &str,
         account: &[u8],
     ) -> Result<(), Self::EA> {
-        self.inner.store_account(contact, directory_url, account).await
+        self.inner
+            .store_account(contact, directory_url, account)
+            .await
     }
 }
 
@@ -258,7 +266,9 @@ pub fn setup_acme(
     };
 
     let base = if acme_insecure {
-        tracing::warn!("ACME_INSECURE=true: not verifying the ACME server's certificate (Pebble mode)");
+        tracing::warn!(
+            "ACME_INSECURE=true: not verifying the ACME server's certificate (Pebble mode)"
+        );
         let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::aws_lc_rs::default_provider(),
         ))
@@ -321,8 +331,8 @@ pub fn setup_acme(
         // `:token`. Get this wrong for the axum in use and the route matches
         // only a literal segment, every challenge 404s, and issuance fails with
         // no compile-time complaint. The e2e test exists partly to catch it.
-        let app = Router::new()
-            .route_service("/.well-known/acme-challenge/{token}", challenge_service);
+        let app =
+            Router::new().route_service("/.well-known/acme-challenge/{token}", challenge_service);
         let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 80));
 
         let listener = match tokio::net::TcpListener::bind(addr).await {

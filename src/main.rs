@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, Router};
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use clap::Parser;
@@ -13,13 +14,12 @@ use handler::AppState;
 use logs::{QueryLogs, UsageStats};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use axum::http::{HeaderValue, Method, StatusCode};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer};
 
 use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::acme::setup_acme;
-use crate::tasks::dnsdist::{ConsoleKey, spawn_dnsdist};
+use crate::tasks::dnsdist::{spawn_dnsdist, ConsoleKey};
 use crate::tasks::dnstap::spawn_dnstap_listener;
 
 #[derive(Parser, Debug)]
@@ -107,7 +107,11 @@ struct WebConfig {
 /// Builds the CORS layer from `LOGS_CORS_ORIGINS`, refusing anything that is
 /// not an exact `http(s)://` origin -- `*` above all, see the flag's doc.
 fn logs_cors(origins: &[String]) -> anyhow::Result<Option<CorsLayer>> {
-    let origins: Vec<&str> = origins.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+    let origins: Vec<&str> = origins
+        .iter()
+        .map(|o| o.trim())
+        .filter(|o| !o.is_empty())
+        .collect();
     if origins.is_empty() {
         return Ok(None);
     }
@@ -116,7 +120,9 @@ fn logs_cors(origins: &[String]) -> anyhow::Result<Option<CorsLayer>> {
     for origin in origins {
         let exact = origin.starts_with("https://") || origin.starts_with("http://");
         if !exact || origin.contains('*') || origin.ends_with('/') {
-            anyhow::bail!("LOGS_CORS_ORIGINS: {origin:?} is not an exact origin like https://dns.example.com");
+            anyhow::bail!(
+                "LOGS_CORS_ORIGINS: {origin:?} is not an exact origin like https://dns.example.com"
+            );
         }
         values.push(HeaderValue::from_str(origin)?);
     }
