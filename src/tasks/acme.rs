@@ -1,7 +1,9 @@
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -11,6 +13,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::DigitallySignedStruct;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{AccountCache, AcmeConfig, CertCache, ResolvesServerCertAcme, UseChallenge};
+use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -345,14 +348,7 @@ pub fn setup_acme(
         };
         tracing::info!("acme challenge server listening on port 80");
 
-        let shutdown = cloned_token.clone();
-        if let Err(err) = axum::serve(listener, app)
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await
-        {
-            tracing::error!("acme challenge server error: {err}");
-            cloned_token.cancel();
-        }
+        serve_challenges(listener, app, cloned_token).await;
     });
 
     Acme {
@@ -362,9 +358,78 @@ pub fn setup_acme(
     }
 }
 
+/// How long open challenge connections get to finish after shutdown starts.
+const CHALLENGE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// Serves HTTP-01 challenges until `token` is cancelled.
+///
+/// Graceful shutdown alone waits for every open connection, and port 80 is
+/// public: a scanner that sent half a request and went quiet held shutdown open
+/// until Docker's 10 s stop timeout killed the container, so each restart of an
+/// affected node took ~10 s of DNS down instead of ~1 s. After the grace period
+/// the server future is dropped, which closes whatever is still open.
+async fn serve_challenges(listener: TcpListener, app: Router, token: CancellationToken) {
+    let shutdown = token.clone();
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .into_future();
+    let grace_over = async {
+        token.cancelled().await;
+        tokio::time::sleep(CHALLENGE_SHUTDOWN_GRACE).await;
+    };
+
+    tokio::select! {
+        res = server => {
+            if let Err(err) = res {
+                tracing::error!("acme challenge server error: {err}");
+                token.cancel();
+            }
+        }
+        _ = grace_over => {
+            tracing::info!(
+                "acme challenge server: connections still open {CHALLENGE_SHUTDOWN_GRACE:?} after shutdown, closing them"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::split_pem;
+    use std::time::Duration;
+
+    use axum::Router;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{serve_challenges, split_pem};
+
+    /// Port 80 is public, so at shutdown there may be a client that sent half a
+    /// request and went quiet. The server must still stop well inside Docker's
+    /// 10 s stop timeout, or the container is killed and DNS is down that long.
+    #[tokio::test]
+    async fn challenge_server_stops_with_a_half_sent_request_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let token = CancellationToken::new();
+        let server = tokio::spawn(serve_challenges(listener, Router::new(), token.clone()));
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        // Headers never finished: no blank line.
+        client
+            .write_all(b"GET /.well-known/acme-challenge/x HTTP/1.1\r\nHost: example\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        token.cancel();
+        let stopped = tokio::time::timeout(Duration::from_secs(5), server).await;
+        assert!(
+            stopped.is_ok(),
+            "challenge server still running 5 s after cancel"
+        );
+        drop(client);
+    }
 
     #[test]
     fn splits_key_from_chain() {
