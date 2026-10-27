@@ -129,12 +129,8 @@ fn parse_message(payload: &[u8]) -> Option<DnstapMessage> {
             (MSG_FIELD_QUERY_ADDRESS, 2) => {
                 let raw = r.bytes()?;
                 out.query_address = match raw.len() {
-                    4 => Some(IpAddr::V4(Ipv4Addr::from(
-                        <[u8; 4]>::try_from(raw).ok()?,
-                    ))),
-                    16 => Some(IpAddr::V6(Ipv6Addr::from(
-                        <[u8; 16]>::try_from(raw).ok()?,
-                    ))),
+                    4 => Some(IpAddr::V4(Ipv4Addr::from(<[u8; 4]>::try_from(raw).ok()?))),
+                    16 => Some(IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(raw).ok()?))),
                     // Any other length is not an address; drop it rather than
                     // guessing.
                     _ => None,
@@ -219,7 +215,10 @@ mod tests {
     #[test]
     fn handles_ipv6_query_addresses() {
         let mut m = Vec::new();
-        m.extend(len_delim(MSG_FIELD_QUERY_ADDRESS, &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
+        m.extend(len_delim(
+            MSG_FIELD_QUERY_ADDRESS,
+            &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        ));
         let got = parse_dnstap(&len_delim(DNSTAP_FIELD_MESSAGE, &m)).unwrap();
         assert_eq!(got.query_address, Some("2001:db8::1".parse().unwrap()));
     }

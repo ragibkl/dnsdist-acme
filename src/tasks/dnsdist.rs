@@ -1,8 +1,8 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use tokio::process::{Child, Command};
 
 /// The dnsdist console key, generated fresh at every start.
@@ -204,6 +204,9 @@ mod tests {
     fn debug_does_not_leak_the_key() {
         let key = ConsoleKey::generate().unwrap();
         let shown = format!("{key:?}");
-        assert!(!shown.contains(key.as_str()), "key leaked via Debug: {shown}");
+        assert!(
+            !shown.contains(key.as_str()),
+            "key leaked via Debug: {shown}"
+        );
     }
 }

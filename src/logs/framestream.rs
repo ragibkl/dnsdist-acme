@@ -48,7 +48,10 @@ const MAX_FRAME_LEN: u32 = 256 * 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum Frame {
-    Control { control_type: u32, content_type: Option<Vec<u8>> },
+    Control {
+        control_type: u32,
+        content_type: Option<Vec<u8>>,
+    },
     Data(Vec<u8>),
 }
 
@@ -100,7 +103,10 @@ pub fn parse_control(payload: &[u8]) -> io::Result<Frame> {
         i += field_len;
     }
 
-    Ok(Frame::Control { control_type, content_type })
+    Ok(Frame::Control {
+        control_type,
+        content_type,
+    })
 }
 
 /// Reads one frame. Returns None at a clean end of stream.
@@ -118,7 +124,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Fr
         r.read_exact(&mut len_buf).await?;
         let clen = u32::from_be_bytes(len_buf);
         if clen > MAX_FRAME_LEN {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "control frame too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control frame too large",
+            ));
         }
         let mut payload = vec![0u8; clen as usize];
         r.read_exact(&mut payload).await?;
@@ -126,7 +135,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Fr
     }
 
     if len > MAX_FRAME_LEN {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "data frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "data frame too large",
+        ));
     }
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload).await?;

@@ -20,8 +20,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::logs::{
-    Frame, QueryLogs, UsageStats, accept_handshake, is_stop, query_log_from_frame, read_frame,
-    send_finish,
+    accept_handshake, is_stop, query_log_from_frame, read_frame, send_finish, Frame, QueryLogs,
+    UsageStats,
 };
 
 /// Binds the socket dnsdist will connect to, and serves it until cancelled.

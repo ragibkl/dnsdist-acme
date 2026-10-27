@@ -8,5 +8,5 @@ pub use query_log::*;
 pub use query_logs::*;
 pub use usage_stats::*;
 
-pub use framestream::{Frame, accept_handshake, is_stop, read_frame, send_finish};
+pub use framestream::{accept_handshake, is_stop, read_frame, send_finish, Frame};
 pub use query_log::query_log_from_frame;
