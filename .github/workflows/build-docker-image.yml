@@ -78,6 +78,14 @@ jobs:
           load: true
           tags: dnsdist-acme:ci
           cache-from: type=gha
+          # Always rebuild the runtime stage: alpine:3.24 rarely changes digest,
+          # so a cached `apk add dnsdist` layer kept shipping dnsdist 2.0.8 after
+          # Alpine moved to 2.0.12 (PowerDNS advisory 2026-15).
+          no-cache-filters: runtime
+          pull: true
+
+      - name: Show bundled dnsdist version
+        run: docker run --rm --entrypoint dnsdist dnsdist-acme:ci --version | head -1
 
       - name: End-to-end ACME test against Pebble
         env:
@@ -131,5 +139,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64,linux/386,linux/arm/v7
           project: 83rwjkn7g4
+          # Always rebuild the runtime stage: alpine:3.24 rarely changes digest,
+          # so a cached `apk add dnsdist` layer kept shipping dnsdist 2.0.8 after
+          # Alpine moved to 2.0.12 (PowerDNS advisory 2026-15).
+          no-cache-filters: runtime
+          pull: true
           push: true
           tags: ${{ steps.meta.outputs.tags }}
