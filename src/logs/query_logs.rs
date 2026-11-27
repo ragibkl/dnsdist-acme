@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use chrono::{Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 
 use super::QueryLog;
 
@@ -80,7 +80,7 @@ pub struct QueryLogs {
 
 impl Default for QueryLogs {
     fn default() -> Self {
-        let start = Utc::now().timestamp_micros().max(0) as u64;
+        let start = Timestamp::now().as_microsecond().max(0) as u64;
         Self {
             logs_store: Arc::default(),
             dropped: Arc::default(),
@@ -101,7 +101,7 @@ pub struct LogsPage {
 
 impl QueryLogs {
     pub fn remove_expired_logs(&self) {
-        let query_time_cutoff = Utc::now() - Duration::minutes(MAX_AGE_MINUTES);
+        let query_time_cutoff = Timestamp::now() - SignedDuration::from_mins(MAX_AGE_MINUTES);
 
         let mut logs_store_guard = self.logs_store.lock().unwrap();
         for query_logs in logs_store_guard.values_mut() {
@@ -165,13 +165,12 @@ impl QueryLogs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
 
     fn log_at(ip: &str, secs: i64) -> QueryLog {
         QueryLog {
             ip: ip.to_string(),
             seq: 0,
-            query_time: DateTime::from_timestamp(secs, 0).unwrap(),
+            query_time: Timestamp::from_second(secs).unwrap(),
             name: format!("q{secs}.example"),
             qtype: "A".to_string(),
             rcode: "NOERROR".to_string(),
@@ -181,7 +180,7 @@ mod tests {
     }
 
     fn recent(ip: &str, n: usize) -> Vec<QueryLog> {
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         (0..n).map(|i| log_at(ip, now + i as i64)).collect()
     }
 

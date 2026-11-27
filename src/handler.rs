@@ -181,7 +181,7 @@ pub async fn get_logs(
 mod tests {
     use super::*;
     use crate::logs::Answer;
-    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
 
     fn page_data(queries: Vec<QueryLog>, active_ips: usize) -> GetLogsOutput {
         GetLogsOutput {
@@ -206,7 +206,7 @@ mod tests {
             vec![QueryLog {
                 ip: "203.0.113.7".to_string(),
                 seq: 1,
-                query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
+                query_time: Timestamp::from_second(1_788_000_000).unwrap(),
                 name: "zedo.com".to_string(),
                 qtype: "A".to_string(),
                 rcode: "NOERROR".to_string(),
@@ -237,7 +237,7 @@ mod tests {
         q.push(QueryLog {
             ip: "203.0.113.7".to_string(),
             seq: 1,
-            query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
+            query_time: Timestamp::from_second(1_788_000_000).unwrap(),
             name: "example.com".to_string(),
             qtype: "A".to_string(),
             rcode: "NOERROR".to_string(),
@@ -263,7 +263,7 @@ mod tests {
             vec![QueryLog {
                 ip: "203.0.113.7".to_string(),
                 seq: 1,
-                query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
+                query_time: Timestamp::from_second(1_788_000_000).unwrap(),
                 name: "example.com".to_string(),
                 qtype: "A".to_string(),
                 rcode: "NOERROR".to_string(),
@@ -295,7 +295,7 @@ mod tests {
             vec![QueryLog {
                 ip: "203.0.113.7".to_string(),
                 seq: 1,
-                query_time: DateTime::<Utc>::from_timestamp(1_788_000_000, 0).unwrap(),
+                query_time: Timestamp::from_second(1_788_000_000).unwrap(),
                 name: "<script>alert(1)</script>".to_string(),
                 qtype: "A".to_string(),
                 rcode: "NOERROR".to_string(),
