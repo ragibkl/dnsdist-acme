@@ -1,0 +1,11 @@
+# cargo-deny configuration. CI runs `cargo deny check advisories` on every
+# change and once a day, so a new RustSec advisory against a crate in
+# Cargo.lock fails the build.
+
+[advisories]
+ignore = [
+    # chrono is unmaintained (chronotope/chrono#1768). Our own code uses jiff;
+    # chrono only remains through rustls-acme 0.15.4 (latest), for certificate
+    # validity times. Remove once rustls-acme drops it.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no fix; only via rustls-acme, our code uses jiff" },
+]

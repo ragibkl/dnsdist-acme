@@ -1,7 +1,7 @@
-use chrono::{DateTime, TimeZone, Utc};
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::{RData, Record};
 use hickory_proto::serialize::binary::BinDecodable;
+use jiff::Timestamp;
 
 use super::dnstap_proto::{parse_dnstap, TYPE_CLIENT_RESPONSE};
 
@@ -21,7 +21,7 @@ pub struct QueryLog {
     /// resolution and can tie.
     pub seq: u64,
     #[serde(rename = "time")]
-    pub query_time: DateTime<Utc>,
+    pub query_time: Timestamp,
     /// The name looked up, without the trailing dot.
     pub name: String,
     #[serde(rename = "type")]
@@ -128,10 +128,8 @@ pub fn query_log_from_frame(payload: &[u8]) -> Option<QueryLog> {
 
     // dnstap reports whole seconds separately from nanoseconds; second
     // resolution is all the ten-minute log window needs.
-    let query_time = Utc
-        .timestamp_opt(frame.query_time_sec as i64, 0)
-        .single()
-        .unwrap_or_else(Utc::now);
+    let query_time =
+        Timestamp::from_second(frame.query_time_sec as i64).unwrap_or_else(|_| Timestamp::now());
 
     Some(QueryLog {
         ip: ip.to_string(),
@@ -212,7 +210,7 @@ mod tests {
         let log = query_log_from_frame(&f).unwrap();
 
         assert_eq!(log.ip, "10.0.0.7");
-        assert_eq!(log.query_time.timestamp(), 1_788_000_000);
+        assert_eq!(log.query_time.as_second(), 1_788_000_000);
         assert_eq!(log.name, "zedo.com");
         assert_eq!(log.qtype, "A");
         assert_eq!(log.rcode, "NOERROR");
