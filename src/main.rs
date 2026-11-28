@@ -2,24 +2,24 @@ mod handler;
 mod logs;
 mod tasks;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use axum::http::{HeaderValue, Method, StatusCode};
-use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get, Router};
-use axum_server::{tls_rustls::RustlsConfig, Handle};
+use axum::{Router, extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get};
+use axum_server::{Handle, tls_rustls::RustlsConfig};
 use clap::Parser;
 use handler::AppState;
 use logs::{QueryLogs, UsageStats};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer};
 
 use crate::handler::{get_logs, get_logs_api};
 use crate::tasks::acme::setup_acme;
-use crate::tasks::dnsdist::{spawn_dnsdist, ConsoleKey};
+use crate::tasks::dnsdist::{ConsoleKey, spawn_dnsdist};
 use crate::tasks::dnstap::spawn_dnstap_listener;
 
 #[derive(Parser, Debug)]

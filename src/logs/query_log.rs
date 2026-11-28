@@ -3,7 +3,7 @@ use hickory_proto::rr::{RData, Record};
 use hickory_proto::serialize::binary::BinDecodable;
 use jiff::Timestamp;
 
-use super::dnstap_proto::{parse_dnstap, TYPE_CLIENT_RESPONSE};
+use super::dnstap_proto::{TYPE_CLIENT_RESPONSE, parse_dnstap};
 
 /// One client lookup, as `/api/logs` returns it.
 ///

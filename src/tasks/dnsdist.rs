@@ -1,8 +1,8 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use tokio::process::{Child, Command};
 
 /// The dnsdist console key, generated fresh at every start.
