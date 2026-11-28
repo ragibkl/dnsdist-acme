@@ -15,7 +15,7 @@ In order to make it easier to deploy onto a live environment and easier to debug
 - [rust] - main binary to orchestrate the different components. Also serves a web page for viewing the dns logs from the origin ip address
 
 At the moment, this project is available as a Docker container, with all the required components built-in.
-Images are published for `linux/amd64`, `linux/arm64`, `linux/386` and `linux/arm/v7`.
+Images are published for `linux/amd64` and `linux/arm64`.
 
 Port 80 must be reachable from the internet: that is the only port Let's Encrypt
 validates HTTP-01 challenges on. The log pages remain on 8080 and 8443.

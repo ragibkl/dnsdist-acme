@@ -1,10 +1,11 @@
 ## builder
-FROM alpine:3.24 AS builder
+# Keep the Rust version in step with .tool-versions (CI checks they match).
+FROM rust:1.100.0-alpine3.24 AS builder
 
 WORKDIR /code/dnsdist-acme
 
 # setup build dependencies
-RUN apk add rust cargo build-base cmake perl
+RUN apk add build-base cmake perl
 RUN cargo init .
 COPY Cargo.toml Cargo.lock ./
 RUN cargo build --release
