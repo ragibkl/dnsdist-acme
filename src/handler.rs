@@ -2,10 +2,10 @@ use std::net::SocketAddr;
 use std::sync::LazyLock;
 
 use axum::{
-    extract::{ConnectInfo, Query, State},
-    http::{header, StatusCode},
-    response::{Html, IntoResponse, Response},
     Json,
+    extract::{ConnectInfo, Query, State},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
 use handlebars::Handlebars;
 

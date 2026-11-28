@@ -1,23 +1,23 @@
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
 use futures::StreamExt;
+use rustls::DigitallySignedStruct;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::DigitallySignedStruct;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{AccountCache, AcmeConfig, CertCache, ResolvesServerCertAcme, UseChallenge};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use super::dnsdist::{run_dnsdist_reload_cert, ConsoleKey};
+use super::dnsdist::{ConsoleKey, run_dnsdist_reload_cert};
 
 /// Skips verification of the ACME *server's* certificate. Only for pointing at
 /// a local Pebble instance in tests, which signs with an ephemeral CA that is
@@ -81,10 +81,10 @@ fn split_pem(pem: &[u8]) -> anyhow::Result<(String, String)> {
             block.push_str(line);
             block.push('\n');
         }
-        if line.starts_with("-----END") {
-            if let Some(block) = current.take() {
-                blocks.push(block);
-            }
+        if line.starts_with("-----END")
+            && let Some(block) = current.take()
+        {
+            blocks.push(block);
         }
     }
 
